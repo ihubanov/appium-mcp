@@ -5,6 +5,9 @@ import type { ContentResult, FastMCP } from 'fastmcp';
 import { z } from 'zod';
 import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
 import { elementUUIDScheme } from '../../schema.js';
+import { assertNotProtected } from '../../protected-urls.js';
+import { assertNotUserFocused } from '../../focus-guard.js';
+import { logActivity } from '../../activity-log.js';
 
 export default function hover(server: FastMCP): void {
   const hoverSchema = z.object({
@@ -14,7 +17,7 @@ export default function hover(server: FastMCP): void {
   server.addTool({
     name: 'playwright_hover',
     description:
-      'Hover over an element to trigger hover states, tooltips, or dropdown menus. Only works with Playwright web sessions.',
+      'Hover the mouse over an element on the active tab, just like a human cursor would. Use this to reveal hover-only menus, tooltips, or dropdown previews before clicking through.',
     parameters: hoverSchema,
     annotations: {
       readOnlyHint: false,
@@ -31,9 +34,13 @@ export default function hover(server: FastMCP): void {
         );
       }
 
+      assertNotProtected(driver.page.url(), 'hover on');
+      await assertNotUserFocused(driver.page, 'hover on');
+
       try {
         const el = driver.requireElement(args.elementUUID);
         await el.hover();
+        logActivity({ tool: 'playwright_hover', tab: driver.page.url(), status: 'ok' });
 
         return {
           content: [

@@ -9,7 +9,7 @@ export default function getUrl(server: FastMCP): void {
   server.addTool({
     name: 'playwright_get_url',
     description:
-      'Get the current page URL and title. Only works with Playwright web sessions.',
+      "Get the URL and title of the AI's currently active tab in the real browser. Useful after a navigation or a click that may have triggered a redirect.",
     parameters: z.object({}),
     annotations: {
       readOnlyHint: true,

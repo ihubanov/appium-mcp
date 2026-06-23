@@ -4,6 +4,9 @@
 import type { ContentResult, FastMCP } from 'fastmcp';
 import { z } from 'zod';
 import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
+import { assertNotProtected } from '../../protected-urls.js';
+import { assertNotUserFocused } from '../../focus-guard.js';
+import { logActivity } from '../../activity-log.js';
 
 export default function evaluate(server: FastMCP): void {
   const evaluateSchema = z.object({
@@ -17,7 +20,7 @@ export default function evaluate(server: FastMCP): void {
   server.addTool({
     name: 'playwright_evaluate',
     description:
-      'Execute JavaScript code in the browser page context and return the result. Only works with Playwright web sessions.',
+      "Run a JavaScript expression in the AI's active tab and get the result back. Use this to scrape structured data from a page (`document.querySelectorAll(...).map(e => e.textContent)`), call a page's own JS API, fetch a JSON endpoint via `fetch(...)` from the page's origin (useful for SearXNG's /search?format=json), or check page state. The page is real and live — DOM, cookies, network are all what a human would see.",
     parameters: evaluateSchema,
     annotations: {
       readOnlyHint: false,
@@ -34,10 +37,14 @@ export default function evaluate(server: FastMCP): void {
         );
       }
 
+      assertNotProtected(driver.page.url(), 'evaluate JS in');
+      await assertNotUserFocused(driver.page, 'evaluate JS in');
+
       try {
         const result = await driver.page.evaluate(args.script);
         const resultStr =
           typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+        logActivity({ tool: 'playwright_evaluate', tab: driver.page.url(), status: 'ok', detail: args.script.slice(0, 80) });
 
         return {
           content: [

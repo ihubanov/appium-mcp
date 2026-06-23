@@ -5,6 +5,9 @@ import type { ContentResult, FastMCP } from 'fastmcp';
 import { z } from 'zod';
 import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
 import { elementUUIDScheme } from '../../schema.js';
+import { assertNotProtected } from '../../protected-urls.js';
+import { assertNotUserFocused } from '../../focus-guard.js';
+import { logActivity } from '../../activity-log.js';
 
 export default function selectOption(server: FastMCP): void {
   const selectOptionSchema = z.object({
@@ -47,6 +50,9 @@ export default function selectOption(server: FastMCP): void {
         );
       }
 
+      assertNotProtected(driver.page.url(), 'select option on');
+      await assertNotUserFocused(driver.page, 'select option on');
+
       try {
         const el = driver.requireElement(args.elementUUID);
 
@@ -64,6 +70,7 @@ export default function selectOption(server: FastMCP): void {
         }
 
         const selected = await el.selectOption(option);
+        logActivity({ tool: 'playwright_select_option', tab: driver.page.url(), status: 'ok', detail: JSON.stringify(option) });
 
         return {
           content: [

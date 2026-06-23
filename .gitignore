@@ -12,3 +12,6 @@ src/tools/robot.ts
 package-lock.json
 .idea
 .vscode
+# local machine-specific MCP config & TS build cache
+.mcp.json
+tsconfig.tsbuildinfo

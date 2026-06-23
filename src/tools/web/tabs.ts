@@ -4,6 +4,10 @@
 import type { ContentResult, FastMCP } from 'fastmcp';
 import { z } from 'zod';
 import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
+import { assertNotProtected } from '../../protected-urls.js';
+import { assertNotUserFocused } from '../../focus-guard.js';
+import { writeAiActiveTab } from '../../ai-state.js';
+import { logActivity } from '../../activity-log.js';
 
 export function newTab(server: FastMCP): void {
   const newTabSchema = z.object({
@@ -11,12 +15,18 @@ export function newTab(server: FastMCP): void {
       .string()
       .optional()
       .describe('Optional URL to navigate to in the new tab'),
+    bringToFront: z
+      .boolean()
+      .optional()
+      .describe(
+        'Whether to bring the new tab to the foreground in the user\'s window. Default false — new tabs open in the background so the AI doesn\'t steal focus from the user. Set true only if the user explicitly asked you to show them the new tab.',
+      ),
   });
 
   server.addTool({
     name: 'playwright_new_tab',
     description:
-      'Open a new browser tab, optionally navigating to a URL. The new tab becomes the active page. Only works with Playwright web sessions.',
+      'Open a new tab in the real Chromium window the user is in, optionally navigated to a URL. This is your primary tool for "go look at a website" — it does literally what a person does when they Cmd+T and type a URL. The page loads with full JavaScript, cookies, redirects, and captchas just like for a human. New tabs open in the background by default so the user\'s view doesn\'t get yanked; the AI\'s "active tab" follows the new one. Use this for: web search (always via http://localhost:8484/search?q=…, never google.com directly), opening a specific site the user mentioned, opening a result link from a previous search.',
     parameters: newTabSchema,
     annotations: {
       readOnlyHint: false,
@@ -34,21 +44,51 @@ export function newTab(server: FastMCP): void {
       }
 
       try {
-        const page = await driver.context.newPage();
-        if (args.url) {
-          await page.goto(args.url);
+        const wantBackground = args.bringToFront !== true;
+        let page: import('playwright').Page;
+
+        if (wantBackground) {
+          // True background creation via CDP — Chromium never foregrounds
+          // the new tab, so the user's focused tab doesn't even flicker.
+          // We can't use context.newPage() which always steals focus.
+          const cdp = await driver.context.newCDPSession(driver.page);
+          const newPagePromise = driver.context.waitForEvent('page', { timeout: 15000 });
+          await cdp.send('Target.createTarget', {
+            url: args.url ?? 'about:blank',
+            background: true,
+          });
+          page = await newPagePromise;
+          // Wait for initial load (best-effort) so the AI can act on it
+          // immediately after this call returns.
+          if (args.url) {
+            try { await page.waitForLoadState('load', { timeout: 15000 }); } catch { /* ignore */ }
+          }
+          try { await cdp.detach(); } catch { /* ignore */ }
+        } else {
+          page = await driver.context.newPage();
+          if (args.url) {
+            await page.goto(args.url);
+          }
         }
+
+        // The AI's "active page" follows the new tab regardless of who
+        // has window focus — it's a separate concept.
         driver.setPage(page);
+        writeAiActiveTab(driver.context.pages().indexOf(page), page.url());
+        logActivity({ tool: 'playwright_new_tab', tab: page.url(), status: 'ok', detail: wantBackground ? 'background' : 'foreground' });
 
         const title = await page.title();
         const url = page.url();
-        const totalTabs = driver.context.pages().length;
+        const pages = driver.context.pages();
+        const newIndex = pages.indexOf(page);
 
         return {
           content: [
             {
               type: 'text',
-              text: `New tab opened (tab ${totalTabs}).\nURL: ${url}\nTitle: ${title}`,
+              text: `New tab opened at index ${newIndex} (${
+                wantBackground ? 'in background — user focus preserved' : 'foregrounded'
+              }).\nURL: ${url}\nTitle: ${title}\nTotal tabs: ${pages.length}`,
             },
           ],
         };
@@ -73,12 +113,18 @@ export function switchTab(server: FastMCP): void {
       .int()
       .min(0)
       .describe('Zero-based index of the tab to switch to'),
+    bringToFront: z
+      .boolean()
+      .optional()
+      .describe(
+        'Whether to also foreground the tab in the user\'s window. Default false — switches the AI\'s internal active tab without stealing focus from the user. Set true only if the user explicitly asked to be shown that tab.',
+      ),
   });
 
   server.addTool({
     name: 'playwright_switch_tab',
     description:
-      'Switch to a different browser tab by index. Only works with Playwright web sessions.',
+      "Change which existing open tab the AI is acting on. By default this does NOT change what the user sees — the user's foreground tab stays put — it only retargets subsequent playwright_* calls. Pass bringToFront=true to also surface the tab in the user's window (only do this if the user explicitly asked to be shown that tab).",
     parameters: switchTabSchema,
     annotations: {
       readOnlyHint: false,
@@ -105,16 +151,21 @@ export function switchTab(server: FastMCP): void {
 
         const page = pages[args.index];
         driver.setPage(page);
-        await page.bringToFront();
+        writeAiActiveTab(args.index, page.url());
+
+        if (args.bringToFront === true) {
+          await page.bringToFront();
+        }
 
         const title = await page.title();
         const url = page.url();
+        const visible = args.bringToFront === true ? 'foregrounded' : 'AI-active only (user focus untouched)';
 
         return {
           content: [
             {
               type: 'text',
-              text: `Switched to tab ${args.index}.\nURL: ${url}\nTitle: ${title}`,
+              text: `Switched AI active tab to ${args.index} (${visible}).\nURL: ${url}\nTitle: ${title}`,
             },
           ],
         };
@@ -136,7 +187,7 @@ export function listTabs(server: FastMCP): void {
   server.addTool({
     name: 'playwright_list_tabs',
     description:
-      'List all open browser tabs with their URLs and titles. Only works with Playwright web sessions.',
+      'List every tab currently open in the real browser window with index, URL, title, and which is the AI-active tab. Use mcp__tabs__tabs_state instead when you can — it also reports user-focus and content previews, and doesn\'t require a session bootstrap.',
     parameters: z.object({}),
     annotations: {
       readOnlyHint: true,
@@ -200,7 +251,7 @@ export function closeTab(server: FastMCP): void {
   server.addTool({
     name: 'playwright_close_tab',
     description:
-      'Close a browser tab by index, or close the current active tab if no index is provided. Only works with Playwright web sessions.',
+      'Close a tab in the user\'s browser window by index, or the AI-active tab if no index is given. Use this to clean up after you\'re done with a research tab and don\'t need it anymore. Refused on the qwen-web TUI tab and on a tab the user is currently looking at.',
     parameters: closeTabSchema,
     annotations: {
       readOnlyHint: false,
@@ -228,7 +279,11 @@ export function closeTab(server: FastMCP): void {
         }
 
         const pageToClose = pages[targetIndex];
+        assertNotProtected(pageToClose.url(), 'close tab');
+        await assertNotUserFocused(pageToClose, 'close tab');
+        const closedUrl = pageToClose.url();
         await pageToClose.close();
+        logActivity({ tool: 'playwright_close_tab', tab: closedUrl, status: 'ok' });
 
         // Switch to the last remaining tab if we closed the active one
         const remaining = driver.context.pages();

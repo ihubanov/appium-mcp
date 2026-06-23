@@ -4,6 +4,9 @@
 import type { ContentResult, FastMCP } from 'fastmcp';
 import { z } from 'zod';
 import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
+import { assertNotProtected } from '../../protected-urls.js';
+import { assertNotUserFocused } from '../../focus-guard.js';
+import { logActivity } from '../../activity-log.js';
 
 export function goBack(server: FastMCP): void {
   server.addTool({
@@ -22,6 +25,9 @@ export function goBack(server: FastMCP): void {
           'No Playwright web session found. Create a session with platform="web" first.'
         );
       }
+
+      assertNotProtected(driver.page.url(), 'navigate back on');
+      await assertNotUserFocused(driver.page, 'navigate back on');
 
       try {
         await driver.page.goBack();
@@ -67,6 +73,9 @@ export function goForward(server: FastMCP): void {
         );
       }
 
+      assertNotProtected(driver.page.url(), 'navigate forward on');
+      await assertNotUserFocused(driver.page, 'navigate forward on');
+
       try {
         await driver.page.goForward();
         const title = await driver.page.title();
@@ -110,6 +119,9 @@ export function reload(server: FastMCP): void {
           'No Playwright web session found. Create a session with platform="web" first.'
         );
       }
+
+      assertNotProtected(driver.page.url(), 'reload');
+      await assertNotUserFocused(driver.page, 'reload');
 
       try {
         await driver.page.reload();

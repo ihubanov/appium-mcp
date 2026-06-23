@@ -283,7 +283,7 @@ export default function createSession(server: any): void {
       - Use select_platform with platform='web' first
       - Then call create_session with platform='web'
       - Optionally specify browser (chromium, firefox, webkit) and headless mode
-      - No remoteServerUrl needed - Playwright launches the browser directly
+      - When AI_COLLEAGUE_CDP_ENDPOINT / APPIUM_MCP_CDP_ENDPOINT is set, this attaches to the user's already-running Chromium window (the one they can see). Otherwise Playwright launches a fresh browser. Either way it's a real browser — full JavaScript, cookies, redirects, captchas all behave like for a human user.
       WORKFLOW FOR REMOTE SERVERS (remoteServerUrl provided):
       - SKIP select_platform tool entirely
       - Infer the platform from the user's request (e.g., 'ios', 'android', or 'general')
@@ -319,7 +319,10 @@ export default function createSession(server: any): void {
           "For web platform only: Browser engine to use. Default is 'chromium'. Options: 'chromium', 'firefox', 'webkit' (Safari engine)."
         ),
       headless: z
-        .boolean()
+        .preprocess((val) => {
+          if (typeof val === 'string') return val.toLowerCase() !== 'false';
+          return val;
+        }, z.boolean())
         .optional()
         .describe(
           'For web platform only: Whether to run the browser in headless mode. Default is true.'
@@ -372,13 +375,120 @@ export default function createSession(server: any): void {
             );
           }
 
-          const browser = await engine.launch({ headless });
-          const context = await browser.newContext({
-            viewport,
-            userAgent:
-              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-          });
-          const page = await context.newPage();
+          // CDP attach mode: when APPIUM_MCP_CDP_ENDPOINT is set, attach to
+          // an externally-managed Chromium instance (e.g. one launched by
+          // ai-colleague with --remote-debugging-port) instead of spawning
+          // a fresh browser. New tabs/pages opened by the AI then appear
+          // in the user's already-open Chromium window.
+          const cdpEndpoint = process.env.APPIUM_MCP_CDP_ENDPOINT;
+          let browser: import('playwright').Browser;
+          let context: import('playwright').BrowserContext;
+          let page: import('playwright').Page;
+
+          if (cdpEndpoint && browserType === 'chromium') {
+            log.info(`Attaching to existing Chromium via CDP at ${cdpEndpoint}`);
+            browser = await chromium.connectOverCDP(cdpEndpoint);
+            const contexts = browser.contexts();
+            context = contexts[0] ?? (await browser.newContext({
+              viewport,
+              userAgent:
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            }));
+            // CDP-attach: do NOT create a new page on session creation.
+            // The user already sees their open tabs in the host Chromium;
+            // opening a blank tab here would pollute the tab list before
+            // the AI has done anything. We adopt the first existing page
+            // as the driver's "active" handle so tools have something to
+            // operate on, but the AI is expected to call playwright_new_tab
+            // before any navigation/interaction so it never accidentally
+            // mutates a page the user owns (e.g. the qwen-web TUI tab).
+            const existing = context.pages();
+            if (existing.length > 0) {
+              page = existing[0]!;
+            } else {
+              // Edge case: a Chromium with zero pages. Open one so the
+              // driver isn't broken; this is the only time CDP-attach
+              // create_session adds a tab.
+              page = await context.newPage();
+            }
+          } else {
+            if (cdpEndpoint && browserType !== 'chromium') {
+              log.warn(
+                `APPIUM_MCP_CDP_ENDPOINT is set but browserType=${browserType}; CDP attach only supports chromium. Falling back to launch().`
+              );
+            }
+
+            // Human-like ("stealth") defaults for chromium so sites with
+            // bot detection (Google sign-in, Booking, etc.) treat the
+            // browser like a real user instead of automation. We prefer the
+            // installed Google Chrome binary over bundled Chromium, strip
+            // the automation switches that set navigator.webdriver and the
+            // "controlled by automated software" banner, and mask the
+            // remaining automation fingerprints via an init script.
+            // Set APPIUM_MCP_STEALTH=0 to opt back into plain launch.
+            const stealth =
+              browserType === 'chromium' &&
+              process.env.APPIUM_MCP_STEALTH !== '0';
+            const chromeUA =
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
+
+            if (stealth) {
+              const launchOpts = {
+                headless,
+                args: [
+                  '--disable-blink-features=AutomationControlled',
+                  '--no-first-run',
+                  '--no-default-browser-check',
+                  '--disable-infobars',
+                ],
+                ignoreDefaultArgs: ['--enable-automation'],
+              };
+              try {
+                // Real Google Chrome binary — least detectable.
+                browser = await chromium.launch({
+                  ...launchOpts,
+                  channel: 'chrome',
+                });
+              } catch (e) {
+                log.warn(
+                  `Could not launch system Chrome channel (${(e as Error).message}); falling back to bundled Chromium.`
+                );
+                browser = await chromium.launch(launchOpts);
+              }
+            } else {
+              browser = await engine.launch({ headless });
+            }
+
+            context = await browser.newContext({
+              viewport,
+              userAgent: stealth
+                ? chromeUA
+                : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+              locale: 'en-US',
+              timezoneId: 'Europe/Sofia',
+            });
+
+            if (stealth) {
+              await context.addInitScript(() => {
+                // navigator.webdriver === true is the #1 automation tell.
+                Object.defineProperty(navigator, 'webdriver', {
+                  get: () => undefined,
+                });
+                Object.defineProperty(navigator, 'languages', {
+                  get: () => ['en-US', 'en'],
+                });
+                Object.defineProperty(navigator, 'plugins', {
+                  get: () => [1, 2, 3, 4, 5],
+                });
+                // Some detectors check for the presence of window.chrome.
+                (window as unknown as { chrome: unknown }).chrome = (
+                  window as unknown as { chrome?: unknown }
+                ).chrome || { runtime: {} };
+              });
+            }
+
+            page = await context.newPage();
+          }
 
           if (initialUrl) {
             await page.goto(initialUrl);
@@ -408,6 +518,15 @@ export default function createSession(server: any): void {
               },
             ],
           };
+
+          // Hosts that render MCP responses as plain text (e.g. qwen-code's
+          // TUI) end up dumping the entire HTML dashboard inline, which is
+          // very noisy for the user. Suppress the UI resource when
+          // APPIUM_MCP_NO_UI is set, or implicitly when CDP-attach mode is
+          // active (ai-colleague case).
+          if (process.env.APPIUM_MCP_NO_UI || cdpEndpoint) {
+            return textResponse;
+          }
 
           const uiResource = createUIResource(
             `ui://appium-mcp/session-dashboard/${sessionId}`,
