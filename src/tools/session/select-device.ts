@@ -10,28 +10,44 @@ import {
   createDevicePickerUI,
   addUIResourceToResponse,
 } from '../../ui/mcp-ui-utils.js';
+import { currentConnectionId } from '../../connection-context.js';
 
-// Store selected device globally
-let selectedDeviceUdid: string | null = null;
-let selectedDeviceType: 'simulator' | 'real' | null = null;
-let selectedDeviceInfo: any = null;
+// The device a client picked before creating a session. Stored per MCP
+// connection so one client's selection can't leak into another client's
+// create_session (they'd otherwise fight over the same global and target the
+// wrong physical device).
+interface DeviceSelection {
+  udid: string | null;
+  type: 'simulator' | 'real' | null;
+  info: any;
+}
+
+const selectionByConnection = new Map<string, DeviceSelection>();
+
+function currentSelection(): DeviceSelection {
+  const connectionId = currentConnectionId();
+  let selection = selectionByConnection.get(connectionId);
+  if (!selection) {
+    selection = { udid: null, type: null, info: null };
+    selectionByConnection.set(connectionId, selection);
+  }
+  return selection;
+}
 
 export function getSelectedDevice(): string | null {
-  return selectedDeviceUdid;
+  return currentSelection().udid;
 }
 
 export function getSelectedDeviceType(): 'simulator' | 'real' | null {
-  return selectedDeviceType;
+  return currentSelection().type;
 }
 
 export function getSelectedDeviceInfo(): any {
-  return selectedDeviceInfo;
+  return currentSelection().info;
 }
 
 export function clearSelectedDevice(): void {
-  selectedDeviceUdid = null;
-  selectedDeviceType = null;
-  selectedDeviceInfo = null;
+  selectionByConnection.delete(currentConnectionId());
 }
 
 /**
@@ -59,7 +75,8 @@ function selectAndroidDevice(deviceUdid: string, devices: any[]): void {
     );
   }
 
-  selectedDeviceUdid = deviceUdid;
+  const selection = currentSelection();
+  selection.udid = deviceUdid;
   log.info(`Device selected: ${deviceUdid}`);
 }
 
@@ -162,9 +179,10 @@ function selectIOSDevice(
     );
   }
 
-  selectedDeviceUdid = deviceUdid;
-  selectedDeviceType = iosDeviceType;
-  selectedDeviceInfo = selectedDevice;
+  const selection = currentSelection();
+  selection.udid = deviceUdid;
+  selection.type = iosDeviceType;
+  selection.info = selectedDevice;
   log.info(
     `iOS ${iosDeviceType} selected: ${selectedDevice.name} (${deviceUdid})`
   );

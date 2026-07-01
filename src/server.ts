@@ -1,7 +1,12 @@
 import { FastMCP } from 'fastmcp';
 import registerTools from './tools/index.js';
 import registerResources from './resources/index.js';
-import { listSessions, safeDeleteAllSessions } from './session-store.js';
+import {
+  listSessions,
+  safeDeleteAllSessions,
+  safeDeleteSessionsForConnection,
+} from './session-store.js';
+import { runWithConnection } from './connection-context.js';
 import log from './logger.js';
 
 const server = new FastMCP({
@@ -10,6 +15,27 @@ const server = new FastMCP({
   instructions:
     'Intelligent MCP server providing AI assistants with powerful tools and resources for Appium mobile automation and Playwright web browser automation',
 });
+
+// Run every tool's execute() inside its MCP connection's async context so
+// session-store / select-device can partition their state per client. Without
+// this, a single shared httpStream backend lets one client's create/select
+// session repoint every other client (they'd end up driving the wrong
+// browser/device). `context.sessionId` is the stable mcp-session-id in stateful
+// httpStream; it's undefined for stdio, which harmlessly maps to one shared
+// bucket. Wrapping addTool here means no individual tool needs to change.
+const originalAddTool = server.addTool.bind(server);
+(server as unknown as { addTool: (config: any) => unknown }).addTool = (
+  toolConfig: any
+) => {
+  if (toolConfig && typeof toolConfig.execute === 'function') {
+    const originalExecute = toolConfig.execute;
+    toolConfig.execute = (args: any, context: any) =>
+      runWithConnection(context?.sessionId, () =>
+        originalExecute(args, context)
+      );
+  }
+  return originalAddTool(toolConfig);
+};
 
 registerResources(server);
 registerTools(server);
@@ -44,20 +70,37 @@ server.on('disconnect', async (event) => {
     return;
   }
   const sessions = listSessions();
-  if (sessions.length > 0) {
-    try {
+  if (sessions.length === 0) {
+    log.info('No active sessions to clean up on disconnect.');
+    return;
+  }
+
+  // Prefer tearing down only the sessions owned by the disconnecting client so
+  // one client's disconnect never destroys another client's live session. Fall
+  // back to clearing everything only if the disconnect event carries no
+  // identifiable connection id.
+  const connectionId = (event.session as { sessionId?: string } | undefined)
+    ?.sessionId;
+  try {
+    if (connectionId) {
       log.info(
-        `${sessions.length} active session(s) detected on disconnect, cleaning up...`
+        `Cleaning up sessions owned by disconnected client ${connectionId}...`
+      );
+      const deletedCount = await safeDeleteSessionsForConnection(connectionId);
+      log.info(
+        `${deletedCount} session(s) for client ${connectionId} cleaned up on disconnect.`
+      );
+    } else {
+      log.info(
+        `${sessions.length} active session(s) detected on disconnect (no client id), cleaning up all...`
       );
       const deletedCount = await safeDeleteAllSessions();
       log.info(
         `${deletedCount} session(s) cleaned up successfully on disconnect.`
       );
-    } catch (error) {
-      log.error('Error cleaning up session on disconnect:', error);
     }
-  } else {
-    log.info('No active sessions to clean up on disconnect.');
+  } catch (error) {
+    log.error('Error cleaning up session on disconnect:', error);
   }
 });
 

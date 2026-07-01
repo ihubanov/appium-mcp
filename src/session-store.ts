@@ -3,6 +3,7 @@ import { XCUITestDriver } from 'appium-xcuitest-driver';
 import type { Client } from 'webdriver';
 import { PlaywrightDriver } from './playwright-adapter.js';
 import log from './logger.js';
+import { currentConnectionId } from './connection-context.js';
 
 // Type aliases for driver variants used throughout the project.
 export type DriverInstance =
@@ -26,16 +27,43 @@ interface SessionInfo {
   currentContext: string | null;
   isDeletingSession: boolean;
   metadata: SessionMetadata;
+  /**
+   * The MCP connection (client) that created this session. Used to keep the
+   * "active session" pointer isolated per client and to avoid auto-activating
+   * another client's session after a deletion.
+   */
+  ownerConnection: string;
 }
 
 /**
  * In-memory store for active Appium sessions and their associated drivers.
+ * The map is shared across all clients (keyed by the driver's own session id),
+ * but *which* session is "active" is tracked per client — see
+ * `activeSessionByConnection`.
  */
 const sessions = new Map<string, SessionInfo>();
 /**
- * The ID of the currently active session, or `null` if no session is active.
+ * The active session id for each MCP connection (client). Because a single
+ * httpStream backend is shared by many clients, a global active pointer would
+ * let one client's create/select repoint every other client. Partitioning by
+ * connection id keeps each client operating on its own driver.
  */
-let activeSessionId: string | null = null;
+const activeSessionByConnection = new Map<string, string>();
+
+/** Active session id for the client making the current tool call. */
+function getActiveSessionId(): string | null {
+  return activeSessionByConnection.get(currentConnectionId()) ?? null;
+}
+
+/** Set (or clear) the active session for the client making the current call. */
+function setActiveSessionForCurrent(id: string | null): void {
+  const connectionId = currentConnectionId();
+  if (id) {
+    activeSessionByConnection.set(connectionId, id);
+  } else {
+    activeSessionByConnection.delete(connectionId);
+  }
+}
 
 export const PLATFORM = {
   android: 'Android',
@@ -110,7 +138,7 @@ export function setSession(
   capabilities: SessionCapabilities = {}
 ) {
   if (!id) {
-    activeSessionId = null;
+    setActiveSessionForCurrent(null);
     return;
   }
 
@@ -134,12 +162,13 @@ export function setSession(
     currentContext: 'NATIVE_APP',
     isDeletingSession: false,
     metadata,
+    ownerConnection: currentConnectionId(),
   });
-  activeSessionId = id;
+  setActiveSessionForCurrent(id);
 }
 
 export function getDriver(sessionId?: string): NullableDriverInstance {
-  const id = sessionId ?? activeSessionId;
+  const id = sessionId ?? getActiveSessionId();
   if (!id) {
     return null;
   }
@@ -147,7 +176,7 @@ export function getDriver(sessionId?: string): NullableDriverInstance {
 }
 
 export function getSessionId() {
-  return activeSessionId;
+  return getActiveSessionId();
 }
 
 export function listSessions(): Array<{
@@ -162,7 +191,7 @@ export function listSessions(): Array<{
   return Array.from(sessions.values()).map((session) => ({
     sessionId: session.sessionId,
     currentContext: session.currentContext,
-    isActive: session.sessionId === activeSessionId,
+    isActive: session.sessionId === getActiveSessionId(),
     platform: session.metadata.platform,
     automationName: session.metadata.automationName,
     deviceName: session.metadata.deviceName,
@@ -174,7 +203,7 @@ export function setActiveSession(sessionId: string): boolean {
   if (!sessions.has(sessionId)) {
     return false;
   }
-  activeSessionId = sessionId;
+  setActiveSessionForCurrent(sessionId);
   return true;
 }
 
@@ -182,7 +211,7 @@ export function setCurrentContext(
   context: string,
   sessionId?: string
 ): boolean {
-  const id = sessionId ?? activeSessionId;
+  const id = sessionId ?? getActiveSessionId();
   if (!id) {
     return false;
   }
@@ -197,7 +226,7 @@ export function setCurrentContext(
 }
 
 export function getCurrentContext(sessionId?: string): string | null {
-  const id = sessionId ?? activeSessionId;
+  const id = sessionId ?? getActiveSessionId();
   if (!id) {
     return null;
   }
@@ -205,7 +234,7 @@ export function getCurrentContext(sessionId?: string): string | null {
 }
 
 export function isDeletingSessionInProgress(sessionId?: string) {
-  const id = sessionId ?? activeSessionId;
+  const id = sessionId ?? getActiveSessionId();
   if (!id) {
     return false;
   }
@@ -213,26 +242,47 @@ export function isDeletingSessionInProgress(sessionId?: string) {
 }
 
 export function hasActiveSession(): boolean {
-  if (!activeSessionId) {
+  const activeId = getActiveSessionId();
+  if (!activeId) {
     return false;
   }
-  const session = sessions.get(activeSessionId);
+  const session = sessions.get(activeId);
   return !!session && !session.isDeletingSession;
 }
 
-function selectNextActiveSessionId(deletedSessionId: string): string | null {
-  if (activeSessionId !== deletedSessionId) {
-    return activeSessionId;
-  }
+/**
+ * After a session is deleted, drop it as the active session for every client
+ * that had it selected, and — for the client performing the deletion — fall
+ * back only to another session that *same* client owns. We deliberately never
+ * auto-activate a session owned by a different client, which would re-introduce
+ * cross-client interference.
+ */
+function reassignActiveAfterDelete(deletedSessionId: string): void {
+  const deletingConnection = currentConnectionId();
 
-  const nextSession = Array.from(sessions.keys()).find(
-    (id) => id !== deletedSessionId
-  );
-  return nextSession ?? null;
+  for (const [connectionId, activeId] of activeSessionByConnection.entries()) {
+    if (activeId !== deletedSessionId) {
+      continue;
+    }
+    if (connectionId === deletingConnection) {
+      const replacement = Array.from(sessions.values()).find(
+        (s) =>
+          s.sessionId !== deletedSessionId &&
+          s.ownerConnection === deletingConnection
+      );
+      if (replacement) {
+        activeSessionByConnection.set(connectionId, replacement.sessionId);
+      } else {
+        activeSessionByConnection.delete(connectionId);
+      }
+    } else {
+      activeSessionByConnection.delete(connectionId);
+    }
+  }
 }
 
 export async function safeDeleteSession(sessionId?: string): Promise<boolean> {
-  const id = sessionId ?? activeSessionId;
+  const id = sessionId ?? getActiveSessionId();
 
   if (!id) {
     log.info('No active session to delete.');
@@ -262,7 +312,7 @@ export async function safeDeleteSession(sessionId?: string): Promise<boolean> {
 
     // Clear the session from store
     sessions.delete(id);
-    activeSessionId = selectNextActiveSessionId(id);
+    reassignActiveAfterDelete(id);
 
     log.info(`Session ${id} deleted successfully.`);
     return true;
@@ -292,6 +342,36 @@ export async function safeDeleteAllSessions(): Promise<number> {
       log.error(`Error deleting session ${sessionId}:`, error);
     }
   }
+
+  return deletedCount;
+}
+
+/**
+ * Delete only the sessions owned by a specific MCP connection. Used on client
+ * disconnect so tearing down one client never destroys another client's live
+ * browser/device session.
+ */
+export async function safeDeleteSessionsForConnection(
+  connectionId: string
+): Promise<number> {
+  let deletedCount = 0;
+  const ownedSessionIds = Array.from(sessions.values())
+    .filter((s) => s.ownerConnection === connectionId)
+    .map((s) => s.sessionId);
+
+  for (const sessionId of ownedSessionIds) {
+    try {
+      const deleted = await safeDeleteSession(sessionId);
+      if (deleted) {
+        deletedCount += 1;
+      }
+    } catch (error) {
+      log.error(`Error deleting session ${sessionId}:`, error);
+    }
+  }
+
+  // Drop any lingering active-pointer for this connection.
+  activeSessionByConnection.delete(connectionId);
 
   return deletedCount;
 }
