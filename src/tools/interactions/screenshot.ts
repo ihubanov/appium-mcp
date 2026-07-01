@@ -97,16 +97,36 @@ export async function executeScreenshot(opts: {
     // Save screenshot to disk
     await deps.writeFile(filepath, screenshotBuffer);
 
+    // Return the screenshot as a real MCP image content block so the model
+    // actually sees it. We send the full-resolution PNG (only pre-resized when
+    // the caller explicitly passes maxWidth) and let the HOST enforce its own
+    // image limits — Claude Code's MCP client resizes/compresses every image
+    // block it receives (transformResultContent -> maybeResizeAndDownsampleImageBuffer),
+    // so downscaling here would be redundant and just discard detail.
+    //
+    // The heavy base64-in-HTML "viewer" UI resource is what used to blow the
+    // token budget on non-mcp-ui hosts (it lands in the resource's text field),
+    // so it's now opt-in via APPIUM_MCP_UI=1. The image block + saved file path
+    // cover both model consumption and human/programmatic access by default.
     const textResponse = {
       content: [
         {
           type: 'text',
           text: `Screenshot saved successfully to: ${filepath}`,
         },
+        {
+          type: 'image',
+          data: displayBase64,
+          mimeType: 'image/png',
+        },
       ],
     };
 
-    // Add interactive screenshot viewer UI
+    if (process.env.APPIUM_MCP_UI !== '1') {
+      return textResponse;
+    }
+
+    // Opt-in: also attach the interactive mcp-ui screenshot viewer.
     const uiResource = createUIResource(
       `ui://appium-mcp/screenshot-viewer/${Date.now()}`,
       createScreenshotViewerUI(displayBase64, filepath)
