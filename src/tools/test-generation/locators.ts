@@ -45,6 +45,29 @@ export default function generateLocators(server: any): void {
           );
         }
 
+        // generate_locators builds NATIVE-mobile locators (resource-id,
+        // accessibility id, and XPath) by parsing the page source as strict
+        // XML. Web (Playwright) sessions return HTML, which (a) isn't valid XML
+        // so the parser throws "Opening and ending tag mismatch", and (b) even
+        // when parsed leniently lands in the XHTML namespace, so the XPath
+        // engine matches nothing and the locators are silently wrong. Rather
+        // than crash or mislead, direct the caller to the right web workflow.
+        if (isPlaywrightDriverSession(driver)) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  message:
+                    'generate_locators is not supported for web (Playwright) sessions — it targets native mobile elements.',
+                  guidance:
+                    'To inspect and locate elements on a web page: call appium_get_page_source to read the HTML/DOM, take an appium_screenshot to see the page, then locate and interact using the playwright_* tools (playwright_navigate, playwright_hover, playwright_type, playwright_press_key, playwright_select_option) or appium_find_element with CSS/text selectors.',
+                }),
+              },
+            ],
+          };
+        }
+
         try {
           // Get the page source from the driver
           const pageSource = await getPageSource(driver);
