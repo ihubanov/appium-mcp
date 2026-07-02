@@ -6,10 +6,32 @@
  * It costs ~50-100ms but only fires on mutations, which are infrequent
  * compared to the read-only `tabs_state` / `playwright_list_tabs` queries.
  *
- * Disable the guard with APPIUM_MCP_RESPECT_USER_FOCUS=false (escape hatch
- * if it ever gets in the way; default is enabled).
+ * The guard only applies to browser contexts the user actually shares with
+ * the AI (CDP-attach mode) — create_session marks those via
+ * markSharedWithUser(). In a browser the MCP launched itself there is no
+ * user to protect, and the active tab of a headed browser is always
+ * "visible", so guarding it would just lock the AI out of its own browser.
+ *
+ * Disable the guard entirely with APPIUM_MCP_RESPECT_USER_FOCUS=false
+ * (escape hatch if it ever gets in the way; default is enabled).
  */
-import type { Page } from 'playwright';
+import type { BrowserContext, Page } from 'playwright';
+
+/** Contexts attached to a browser the user is also using (CDP-attach). */
+const sharedContexts = new WeakSet<BrowserContext>();
+
+/** Mark a context as living in the user's own browser window. */
+export function markSharedWithUser(context: BrowserContext): void {
+  sharedContexts.add(context);
+}
+
+function isSharedWithUser(page: Page): boolean {
+  try {
+    return sharedContexts.has(page.context());
+  } catch {
+    return false;
+  }
+}
 
 function isEnabled(): boolean {
   const v = (process.env['APPIUM_MCP_RESPECT_USER_FOCUS'] ?? 'true')
@@ -38,6 +60,7 @@ export async function assertNotUserFocused(
   action: string,
 ): Promise<void> {
   if (!isEnabled()) return;
+  if (!isSharedWithUser(page)) return;
   if (await isPageUserFocused(page)) {
     let url = '';
     try { url = page.url(); } catch { /* ignore */ }

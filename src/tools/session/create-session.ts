@@ -16,6 +16,8 @@ import {
 } from './select-device.js';
 import { IOSManager } from '../../devicemanager/ios-manager.js';
 import { PlaywrightDriver } from '../../playwright-adapter.js';
+import { markSharedWithUser } from '../../focus-guard.js';
+import { findFreePort } from '../../free-port.js';
 import log from '../../logger.js';
 import {
   createUIResource,
@@ -283,7 +285,7 @@ export default function createSession(server: any): void {
       - Use select_platform with platform='web' first
       - Then call create_session with platform='web'
       - Optionally specify browser (chromium, firefox, webkit) and headless mode
-      - When AI_COLLEAGUE_CDP_ENDPOINT / APPIUM_MCP_CDP_ENDPOINT is set, this attaches to the user's already-running Chromium window (the one they can see). Otherwise Playwright launches a fresh browser. Either way it's a real browser — full JavaScript, cookies, redirects, captchas all behave like for a human user.
+      - When AI_COLLEAGUE_CDP_ENDPOINT / APPIUM_MCP_CDP_ENDPOINT is set, this attaches to the user's already-running Chromium window (the one they can see); focus/protected-tab guards apply there. Otherwise Playwright launches a fresh browser fully detached from any Chrome/Chromium the user already has open (own process/profile/window class, own CDP debug port chosen to be free — APPIUM_MCP_CDP_PORT sets the preferred port, 0/none disables); no focus guards apply to a detached browser. Either way it's a real browser — full JavaScript, cookies, redirects, captchas all behave like for a human user.
       WORKFLOW FOR REMOTE SERVERS (remoteServerUrl provided):
       - SKIP select_platform tool entirely
       - Infer the platform from the user's request (e.g., 'ios', 'android', or 'general')
@@ -384,6 +386,9 @@ export default function createSession(server: any): void {
           let browser: import('playwright').Browser;
           let context: import('playwright').BrowserContext;
           let page: import('playwright').Page;
+          // CDP debug port of a browser we launch ourselves (undefined in
+          // CDP-attach mode or when disabled via APPIUM_MCP_CDP_PORT=0).
+          let cdpPort: number | undefined;
 
           if (cdpEndpoint && browserType === 'chromium') {
             log.info(`Attaching to existing Chromium via CDP at ${cdpEndpoint}`);
@@ -402,6 +407,9 @@ export default function createSession(server: any): void {
             // operate on, but the AI is expected to call playwright_new_tab
             // before any navigation/interaction so it never accidentally
             // mutates a page the user owns (e.g. the qwen-web TUI tab).
+            // This browser is the user's own window — enable the
+            // focus/protected-tab guards for it.
+            markSharedWithUser(context);
             const existing = context.pages();
             if (existing.length > 0) {
               page = existing[0]!;
@@ -418,6 +426,40 @@ export default function createSession(server: any): void {
               );
             }
 
+            // Fully detach the launched browser from any Chrome/Chromium
+            // the user already has open. Playwright's launch() always
+            // creates a fresh temp user-data-dir, so we get our own
+            // process (Chrome's singleton lock is per-profile) — the
+            // args below make the separation visible and safe:
+            //  - --class gives the window its own WM_CLASS so the window
+            //    manager doesn't group it with the user's Chrome (Linux).
+            //  - --remote-debugging-port exposes CDP for this browser on
+            //    a port that is verified free first. If a pre-existing
+            //    Chrome already holds the preferred port we walk to the
+            //    next free one, so a later connectOverCDP can never land
+            //    in the user's browser by accident.
+            // APPIUM_MCP_CDP_PORT sets the preferred port (default 9222);
+            // set it to 0 or "none" to not expose CDP at all.
+            const isChromium = browserType === 'chromium';
+            const cdpPortEnv = (process.env.APPIUM_MCP_CDP_PORT ?? '').trim();
+            if (
+              isChromium &&
+              cdpPortEnv !== '0' &&
+              cdpPortEnv.toLowerCase() !== 'none'
+            ) {
+              const preferredPort = parseInt(cdpPortEnv, 10) || 9222;
+              cdpPort = await findFreePort(preferredPort);
+              if (cdpPort !== preferredPort) {
+                log.info(
+                  `CDP port ${preferredPort} is already in use (another Chrome/Chromium?); using free port ${cdpPort} instead.`
+                );
+              }
+            }
+            const detachArgs = [
+              '--class=appium-mcp',
+              ...(cdpPort ? [`--remote-debugging-port=${cdpPort}`] : []),
+            ];
+
             // Human-like ("stealth") defaults for chromium so sites with
             // bot detection (Google sign-in, Booking, etc.) treat the
             // browser like a real user instead of automation. We prefer the
@@ -427,8 +469,7 @@ export default function createSession(server: any): void {
             // remaining automation fingerprints via an init script.
             // Set APPIUM_MCP_STEALTH=0 to opt back into plain launch.
             const stealth =
-              browserType === 'chromium' &&
-              process.env.APPIUM_MCP_STEALTH !== '0';
+              isChromium && process.env.APPIUM_MCP_STEALTH !== '0';
             const chromeUA =
               'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
@@ -440,6 +481,7 @@ export default function createSession(server: any): void {
                   '--no-first-run',
                   '--no-default-browser-check',
                   '--disable-infobars',
+                  ...detachArgs,
                 ],
                 ignoreDefaultArgs: ['--enable-automation'],
               };
@@ -456,7 +498,10 @@ export default function createSession(server: any): void {
                 browser = await chromium.launch(launchOpts);
               }
             } else {
-              browser = await engine.launch({ headless });
+              browser = await engine.launch({
+                headless,
+                ...(isChromium ? { args: detachArgs } : {}),
+              });
             }
 
             context = await browser.newContext({
@@ -501,6 +546,8 @@ export default function createSession(server: any): void {
             browserName: browserType,
             headless,
             viewport,
+            ...(cdpPort ? { cdpPort } : {}),
+            attachedToUserBrowser: Boolean(cdpEndpoint && browserType === 'chromium'),
           };
           setSession(pwDriver, sessionId, webCapabilities);
 
@@ -514,7 +561,7 @@ export default function createSession(server: any): void {
             content: [
               {
                 type: 'text',
-                text: `WEB session created successfully with ID: ${sessionId}\nPlatform: Web (Playwright)\nBrowser: ${browserType}\nHeadless: ${headless}\nViewport: ${viewport.width}x${viewport.height}${initialUrl ? `\nURL: ${initialUrl}` : ''}\nActive sessions: ${totalSessions}`,
+                text: `WEB session created successfully with ID: ${sessionId}\nPlatform: Web (Playwright)\nBrowser: ${browserType}\nHeadless: ${headless}\nViewport: ${viewport.width}x${viewport.height}${initialUrl ? `\nURL: ${initialUrl}` : ''}${webCapabilities.attachedToUserBrowser ? '\nMode: attached to user browser (CDP)' : `\nMode: detached browser (own process/profile)${cdpPort ? `, CDP on 127.0.0.1:${cdpPort}` : ''}`}\nActive sessions: ${totalSessions}`,
               },
             ],
           };
