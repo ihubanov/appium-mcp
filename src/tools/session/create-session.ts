@@ -383,43 +383,56 @@ export default function createSession(server: any): void {
           // a fresh browser. New tabs/pages opened by the AI then appear
           // in the user's already-open Chromium window.
           const cdpEndpoint = process.env.APPIUM_MCP_CDP_ENDPOINT;
-          let browser: import('playwright').Browser;
-          let context: import('playwright').BrowserContext;
-          let page: import('playwright').Page;
+          let browser!: import('playwright').Browser;
+          let context!: import('playwright').BrowserContext;
+          let page!: import('playwright').Page;
           // CDP debug port of a browser we launch ourselves (undefined in
           // CDP-attach mode or when disabled via APPIUM_MCP_CDP_PORT=0).
           let cdpPort: number | undefined;
+          // True only if we actually attached to the user's own browser.
+          // Attach is attempted when APPIUM_MCP_CDP_ENDPOINT is set, but a
+          // dead endpoint (the user's Chromium isn't running right now)
+          // falls back to a detached launch instead of failing the session.
+          let attachedToUserBrowser = false;
 
           if (cdpEndpoint && browserType === 'chromium') {
             log.info(`Attaching to existing Chromium via CDP at ${cdpEndpoint}`);
-            browser = await chromium.connectOverCDP(cdpEndpoint);
-            const contexts = browser.contexts();
-            context = contexts[0] ?? (await browser.newContext({
-              viewport,
-              userAgent:
-                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-            }));
-            // CDP-attach: do NOT create a new page on session creation.
-            // The user already sees their open tabs in the host Chromium;
-            // opening a blank tab here would pollute the tab list before
-            // the AI has done anything. We adopt the first existing page
-            // as the driver's "active" handle so tools have something to
-            // operate on, but the AI is expected to call playwright_new_tab
-            // before any navigation/interaction so it never accidentally
-            // mutates a page the user owns (e.g. the qwen-web TUI tab).
-            // This browser is the user's own window — enable the
-            // focus/protected-tab guards for it.
-            markSharedWithUser(context);
-            const existing = context.pages();
-            if (existing.length > 0) {
-              page = existing[0]!;
-            } else {
-              // Edge case: a Chromium with zero pages. Open one so the
-              // driver isn't broken; this is the only time CDP-attach
-              // create_session adds a tab.
-              page = await context.newPage();
+            try {
+              const b = await chromium.connectOverCDP(cdpEndpoint);
+              const contexts = b.contexts();
+              const ctx = contexts[0] ?? (await b.newContext({
+                viewport,
+                userAgent:
+                  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+              }));
+              // CDP-attach: do NOT create a new page on session creation.
+              // The user already sees their open tabs in the host Chromium;
+              // opening a blank tab here would pollute the tab list before
+              // the AI has done anything. We adopt the first existing page
+              // as the driver's "active" handle so tools have something to
+              // operate on, but the AI is expected to call playwright_new_tab
+              // before any navigation/interaction so it never accidentally
+              // mutates a page the user owns (e.g. the qwen-web TUI tab).
+              // This browser is the user's own window — enable the
+              // focus/protected-tab guards for it.
+              markSharedWithUser(ctx);
+              const existing = ctx.pages();
+              // Edge case when no pages exist: a Chromium with zero pages.
+              // Open one so the driver isn't broken; this is the only time
+              // CDP-attach create_session adds a tab.
+              const pg = existing[0] ?? (await ctx.newPage());
+              browser = b;
+              context = ctx;
+              page = pg;
+              attachedToUserBrowser = true;
+            } catch (e) {
+              log.warn(
+                `Could not attach to CDP endpoint ${cdpEndpoint} (${(e as Error).message}); the user's browser is probably not running. Falling back to a detached launch.`
+              );
             }
-          } else {
+          }
+
+          if (!attachedToUserBrowser) {
             if (cdpEndpoint && browserType !== 'chromium') {
               log.warn(
                 `APPIUM_MCP_CDP_ENDPOINT is set but browserType=${browserType}; CDP attach only supports chromium. Falling back to launch().`
@@ -547,7 +560,7 @@ export default function createSession(server: any): void {
             headless,
             viewport,
             ...(cdpPort ? { cdpPort } : {}),
-            attachedToUserBrowser: Boolean(cdpEndpoint && browserType === 'chromium'),
+            attachedToUserBrowser,
           };
           setSession(pwDriver, sessionId, webCapabilities);
 
