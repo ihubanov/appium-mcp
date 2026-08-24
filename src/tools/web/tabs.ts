@@ -53,6 +53,12 @@ export function newTab(server: FastMCP): void {
           // We can't use context.newPage() which always steals focus.
           const cdp = await driver.context.newCDPSession(driver.page);
           const newPagePromise = driver.context.waitForEvent('page', { timeout: 15000 });
+          // If cdp.send() below throws, control jumps to the catch and this
+          // promise is never awaited — 15s later it rejects with no handler,
+          // which under Node's default --unhandled-rejections=throw crashes
+          // the whole MCP server. Register a no-op handler so a stranded
+          // waiter can never take the process down.
+          newPagePromise.catch(() => { /* superseded by the catch below */ });
           await cdp.send('Target.createTarget', {
             url: args.url ?? 'about:blank',
             background: true,

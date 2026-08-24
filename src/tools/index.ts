@@ -62,6 +62,7 @@ import switchContext from './context/switch-context.js';
 import navigate from './web/navigate.js';
 import { goBack, goForward, reload } from './web/browser-navigation.js';
 import evaluate from './web/evaluate.js';
+import runScriptTool from './web/run-script.js';
 import selectOption from './web/select-option.js';
 import hover from './web/hover.js';
 import { newTab, switchTab, listTabs, closeTab } from './web/tabs.js';
@@ -204,6 +205,7 @@ export default function registerTools(server: FastMCP): void {
   goForward(server);
   reload(server);
   evaluate(server);
+  runScriptTool(server);
   selectOption(server);
   hover(server);
   newTab(server);

@@ -549,10 +549,24 @@ export default function createSession(server: any): void {
           }
 
           if (initialUrl) {
+            if (attachedToUserBrowser) {
+              // Attached to the user's own browser: `page` is one of the
+              // user's real tabs (adopted above). Navigating it would yank
+              // the user away from whatever they were looking at — and does
+              // so bypassing the protected-url / focus guards that every
+              // other mutating web tool honours. Open a fresh tab for the
+              // AI instead and navigate THAT, leaving the user's tabs alone.
+              page = await context.newPage();
+            }
             await page.goto(initialUrl);
           }
 
-          const pwDriver = new PlaywrightDriver(browser, context, page);
+          const pwDriver = new PlaywrightDriver(
+            browser,
+            context,
+            page,
+            attachedToUserBrowser,
+          );
           const sessionId = `pw-${Date.now()}`;
           const webCapabilities = {
             platformName: 'Web',

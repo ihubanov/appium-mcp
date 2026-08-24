@@ -55,6 +55,34 @@ export default function evaluate(server: FastMCP): void {
           ],
         };
       } catch (err: any) {
+        // A script that submits a form / follows a link tears down its own
+        // execution context mid-run ("Execution context was destroyed …").
+        // That isn't a failure — the script did navigate. Settle the new
+        // page and report it plainly instead of surfacing a scary error, so
+        // the model knows the side effect happened and just can't read a
+        // return value. (For multi-step flows across a navigation, prefer
+        // playwright_run_script, which resumes on the far side.)
+        const msg = err?.message ?? String(err);
+        if (typeof msg === 'string' && msg.includes('Execution context was destroyed')) {
+          try {
+            await driver.page.waitForLoadState('load', { timeout: 15000 });
+          } catch {
+            /* best-effort settle */
+          }
+          const url = (() => { try { return driver.page.url(); } catch { return ''; } })();
+          logActivity({ tool: 'playwright_evaluate', tab: url, status: 'ok', detail: 'navigated (context destroyed)' });
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Script triggered a navigation, which destroyed its execution context before a value could be returned. ` +
+                  `The navigation completed; the page is now at ${url}. ` +
+                  `To run steps on the far side of a navigation as one unit, use playwright_run_script.`,
+              },
+            ],
+          };
+        }
         return {
           content: [
             {

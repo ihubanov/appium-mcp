@@ -25,11 +25,23 @@ export class PlaywrightDriver {
   readonly context: BrowserContext;
   private _page: Page;
   private readonly elements = new Map<string, ElementHandle>();
+  /**
+   * True when this driver is attached (over CDP) to a browser the user is
+   * also using. In that mode the context is the user's OWN default context
+   * and its pages are the user's real tabs — teardown must not close them.
+   */
+  readonly attachedToUserBrowser: boolean;
 
-  constructor(browser: Browser, context: BrowserContext, page: Page) {
+  constructor(
+    browser: Browser,
+    context: BrowserContext,
+    page: Page,
+    attachedToUserBrowser = false,
+  ) {
     this.browser = browser;
     this.context = context;
     this._page = page;
+    this.attachedToUserBrowser = attachedToUserBrowser;
   }
 
   get page(): Page {
@@ -71,6 +83,20 @@ export class PlaywrightDriver {
   /** Clean up: close context and browser. */
   async deleteSession(): Promise<void> {
     this.elements.clear();
+    if (this.attachedToUserBrowser) {
+      // We are attached to the user's own browser over CDP. `context` is
+      // the user's default context (contexts[0]) and its pages are the
+      // user's real tabs — closing it would nuke every tab the user has
+      // open, including the protected TUI tab. Only DISCONNECT the CDP
+      // session (browser.close() on a connected browser detaches without
+      // killing the browser or its contexts). Never touch the context.
+      try {
+        await this.browser.close();
+      } catch {
+        /* already gone / disconnected */
+      }
+      return;
+    }
     await this.context.close();
     await this.browser.close();
   }
