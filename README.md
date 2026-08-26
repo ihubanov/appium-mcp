@@ -56,6 +56,22 @@ Before you begin, ensure you have the following installed:
 3.  Install iOS simulators through Xcode.
 4.  For real device testing, configure your provisioning profiles.
 
+## 🌐 Web-only mode
+
+If you only need browser automation and never mobile, start the server with `--web-only`
+(or set `APPIUM_MCP_WEB_ONLY=1`):
+
+```bash
+npx -y @ihubanov/appium-mcp@latest --web-only
+```
+
+This registers **31 tools instead of 61** — all the Playwright browser tools plus the
+session and element tools they share with the mobile side — and leaves out device setup,
+app management, touch gestures, contexts, test generation and the Appium docs tool.
+
+Every registered tool's description is loaded into the model's context on every session,
+so a client that will only ever drive a browser should not pay for the mobile half.
+
 ## 🛠️ Installation
 
 Standard config works in most of the tools::

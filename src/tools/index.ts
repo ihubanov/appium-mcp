@@ -69,7 +69,29 @@ import { newTab, switchTab, listTabs, closeTab } from './web/tabs.js';
 import { type as playwrightType, pressKey as playwrightPressKey } from './web/keyboard.js';
 import getUrl from './web/get-url.js';
 
+/**
+ * Web-only mode.
+ *
+ * Set --web-only on the command line, or APPIUM_MCP_WEB_ONLY=1, to register
+ * just the browser tools plus the session/element tools they share with the
+ * mobile side. Everything unambiguously mobile — device setup, app management,
+ * touch gestures, contexts, test generation — is left unregistered.
+ *
+ * The point is tool-surface economy: every registered tool's description is
+ * loaded into the model's context on every session, so a client that will only
+ * ever drive a browser should not pay for the mobile half.
+ */
+function isWebOnly(): boolean {
+  if (process.argv.includes('--web-only')) {
+    return true;
+  }
+  const env = process.env.APPIUM_MCP_WEB_ONLY;
+  return env === '1' || env === 'true';
+}
+
 export default function registerTools(server: FastMCP): void {
+  const webOnly = isWebOnly();
+
   // Wrap addTool to inject logging around tool execution
   const originalAddTool = (server as any).addTool.bind(server);
   (server as any).addTool = (toolDef: any) => {
@@ -138,27 +160,33 @@ export default function registerTools(server: FastMCP): void {
 
   // Session Management
   selectPlatform(server);
-  selectDevice(server);
+  if (!webOnly) {
+    selectDevice(server);
+  }
   createSession(server);
   listSessions(server);
   selectSession(server);
   deleteSession(server);
-  openNotifications(server);
-  lockDevice(server);
-  unlockDevice(server);
-  setGeolocation(server);
-  getGeolocation(server);
-  resetGeolocation(server);
+  if (!webOnly) {
+    openNotifications(server);
+    lockDevice(server);
+    unlockDevice(server);
+    setGeolocation(server);
+    getGeolocation(server);
+    resetGeolocation(server);
 
-  // iOS Setup
-  bootSimulator(server);
-  setupWDA(server);
-  installWDA(server);
+    // iOS Setup
+    bootSimulator(server);
+    setupWDA(server);
+    installWDA(server);
+  }
 
   // Navigation
   scroll(server);
   scrollToElement(server);
-  swipe(server);
+  if (!webOnly) {
+    swipe(server);
+  }
 
   // Element Interactions
   // PRIORITY ORDER FOR ELEMENT SEARCH:
@@ -167,37 +195,43 @@ export default function registerTools(server: FastMCP): void {
   // 3. generateLocators    - Generate all locators (heavyweight, for debugging only)
   findElement(server);
   clickElement(server);
-  doubleTap(server);
-  longPress(server);
-  dragAndDrop(server);
-  pinch(server);
-  pressKey(server);
+  if (!webOnly) {
+    doubleTap(server);
+    longPress(server);
+    dragAndDrop(server);
+    pinch(server);
+    pressKey(server);
+  }
   setValue(server);
   getText(server);
   getActiveElement(server);
   getPageSource(server);
-  getOrientation(server);
-  setOrientation(server);
+  if (!webOnly) {
+    getOrientation(server);
+    setOrientation(server);
+  }
   handleAlert(server);
   screenshot(server);
   elementScreenshot(server);
 
-  // App Management
-  activateApp(server);
-  installApp(server);
-  uninstallApp(server);
-  terminateApp(server);
-  listApps(server);
-  isAppInstalled(server);
-  deepLink(server);
+  if (!webOnly) {
+    // App Management
+    activateApp(server);
+    installApp(server);
+    uninstallApp(server);
+    terminateApp(server);
+    listApps(server);
+    isAppInstalled(server);
+    deepLink(server);
 
-  // Context Management
-  getContexts(server);
-  switchContext(server);
+    // Context Management
+    getContexts(server);
+    switchContext(server);
 
-  // Test Generation
-  generateLocators(server);
-  generateTest(server);
+    // Test Generation
+    generateLocators(server);
+    generateTest(server);
+  }
 
   // Web (Playwright) Tools
   navigate(server);
@@ -217,6 +251,9 @@ export default function registerTools(server: FastMCP): void {
   getUrl(server);
 
   // Documentation
-  answerAppium(server);
-  log.info('All tools registered');
+  if (!webOnly) {
+    answerAppium(server);
+  }
+
+  log.info(webOnly ? 'Web-only tools registered' : 'All tools registered');
 }
