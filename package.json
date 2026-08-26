@@ -1,6 +1,6 @@
 {
-  "name": "appium-mcp",
-  "mcpName": "io.github.appium/appium-mcp",
+  "name": "@ihubanov/appium-mcp",
+  "mcpName": "io.github.ihubanov/appium-mcp",
   "version": "1.27.0",
   "type": "module",
   "repository": {
@@ -16,8 +16,8 @@
     "appium-mcp": "dist/index.js"
   },
   "scripts": {
-    "build": "rimraf dist tsconfig.tsbuildinfo && tsc -b && chmod +x dist/index.js && npm run copy-docs",
-    "copy-docs": "mkdir -p dist/tools/documentation/uploads && cp -f src/tools/documentation/uploads/documents.json dist/tools/documentation/uploads/documents.json 2>/dev/null || true",
+    "build": "rimraf dist tsconfig.tsbuildinfo && tsc -b && node scripts/postbuild.mjs",
+    "copy-docs": "node scripts/postbuild.mjs",
     "start": "node dist/index.js",
     "start:stdio": "node dist/index.js",
     "start:httpStream": "node dist/index.js --httpStream",
@@ -67,6 +67,7 @@
   },
   "devDependencies": {
     "@appium/eslint-config-appium-ts": "^3.0.0",
+    "@appium/tsconfig": "^1.1.2",
     "@jest/globals": "^30.2.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",
@@ -100,5 +101,8 @@
     "src/**/*.{js,json}": [
       "prettier --write"
     ]
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
