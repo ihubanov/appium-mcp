@@ -51,6 +51,14 @@ const stepSchema = z.object({
     .optional()
     .describe('Page state / navigation to await for a wait step.'),
   script: z.string().optional().describe('JavaScript body for an eval step.'),
+  visual: z
+    .string()
+    .optional()
+    .describe(
+      'Visible label to look for ON SCREEN when DOM selectors fail (canvas, WebGL, embedded viewers, images). ' +
+      'E.g. visual: "Sign in" grounds the pixels that read "Sign in" via OCR and clicks there. ' +
+      'Works for click/fill/type steps only.'
+    ),
 });
 
 export default function runScriptTool(server: FastMCP): void {

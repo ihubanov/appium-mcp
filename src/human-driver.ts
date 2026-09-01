@@ -27,6 +27,7 @@
 import type { Page } from 'playwright';
 import { assertNotProtected } from './protected-urls.js';
 import { assertNotUserFocused } from './focus-guard.js';
+import { groundLabelOnPage } from './vision-grounding.js';
 
 /** One instruction in a script. */
 export interface Step {
@@ -55,6 +56,12 @@ export interface Step {
   waitFor?: 'load' | 'domcontentloaded' | 'networkidle' | 'navigation';
   /** JavaScript body for `eval`. */
   script?: string;
+  /**
+   * Visible label to look for ON SCREEN (OCR/vision grounding) when DOM
+   * selectors fail — for canvas, WebGL, embedded viewers, images. E.g.
+   * `visual: "Sign in"` clicks the pixels that read "Sign in".
+   */
+  visual?: string;
 }
 
 export type Humanize = 'auto' | 'always' | 'never';
@@ -77,7 +84,7 @@ export interface StepResult {
   action: Step['action'];
   status: 'ok' | 'failed' | 'skipped';
   /** Which path actually did the work. */
-  via?: 'normal' | 'human';
+  via?: 'normal' | 'human' | 'vision';
   /** True if this step caused a navigation the engine absorbed. */
   navigated?: boolean;
   value?: unknown;
@@ -167,7 +174,7 @@ async function runActionable(
   step: Step,
   humanize: Humanize,
   timeout: number,
-): Promise<'normal' | 'human'> {
+): Promise<'normal' | 'human' | 'vision'> {
   const sel = step.selector;
   if (!sel) throw new Error(`Step "${step.action}" requires a selector`);
   const locator = page.locator(sel).first();
@@ -250,9 +257,59 @@ async function runActionable(
   } catch (err) {
     if (looksLikeNavigation(err)) throw err; // let the caller absorb it
     if (humanize === 'never') throw err;
-    await human();
-    return 'human';
+    try {
+      await human();
+      return 'human';
+    } catch (humanErr) {
+      if (looksLikeNavigation(humanErr)) throw humanErr;
+      // Vision rung: the DOM has nothing for this selector — the element
+      // may only exist as pixels (canvas, WebGL, embedded viewer, image).
+      // If the step names what it LOOKS like, ground that label on screen
+      // and act at the coordinates.
+      const vres = await actViaVision(page, step);
+      if (vres) return 'vision';
+      // No visual hint (or nothing matched): rethrow with guidance.
+      const notFound = /waiting for|not found|no element|does not exist/i.test(
+        humanErr instanceof Error ? humanErr.message : String(humanErr),
+      );
+      if (notFound && !step.visual) {
+        throw new Error(
+          `${humanErr instanceof Error ? humanErr.message : String(humanErr)} — ` +
+          `if the control is only rendered as pixels (canvas/WebGL/embedded ` +
+          `viewer/image), add a "visual" hint naming its visible label, e.g. ` +
+          `{"action":"click","selector":"...","visual":"Sign in"}.`,
+        );
+      }
+      throw humanErr;
+    }
   }
+}
+
+/**
+ * Final fallback rung: ground the step's `visual` label on screen (OCR/vision
+ * sidecar) and act at the returned coordinates. Only click / fill / type are
+ * vision-capable — hover/select need richer semantics than a pixel box gives.
+ * Returns the rung's success, or null when it couldn't fire (no hint, no
+ * match, vision disabled) so the caller falls back to rethrowing.
+ */
+async function actViaVision(
+  page: Page,
+  step: Step,
+): Promise<boolean> {
+  if (!step.visual) return false;
+  if (step.action !== 'click' && step.action !== 'fill' && step.action !== 'type') {
+    return false;
+  }
+  const region = await groundLabelOnPage(page, step.visual);
+  if (!region) return false;
+  const cx = region.x + Math.floor(region.w / 2);
+  const cy = region.y + Math.floor(region.h / 2);
+  await page.mouse.click(cx, cy);
+  if (step.action === 'fill' || step.action === 'type') {
+    // Focus landed on whatever draws those pixels; type into it.
+    await page.keyboard.type(step.text ?? '', { delay: jitter(40, 90) });
+  }
+  return true;
 }
 
 /** Wait for a page state, a delay, or a navigation. */
