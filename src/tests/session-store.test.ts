@@ -40,6 +40,8 @@ const {
   safeDeleteAllSessions,
   getPlatformName,
   PLATFORM,
+  touchActiveSession,
+  reapIdleSessions,
 } = await import('../session-store.js');
 
 const { AndroidUiautomator2Driver } =
@@ -494,5 +496,43 @@ describe('getPlatformName', () => {
   test('throws for an unrecognised driver type', () => {
     const unknown = { isAndroid: false, isIOS: false } as any;
     expect(() => getPlatformName(unknown)).toThrow('Unknown driver type');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idle reaper — reapIdleSessions / touchActiveSession
+// ---------------------------------------------------------------------------
+describe('reapIdleSessions', () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test('is a no-op when idleMs is not positive (disabled)', async () => {
+    const del = jest.fn(async () => {});
+    setSession(makeMockDriver(del), 's-disabled');
+    const res = await reapIdleSessions(0);
+    expect(res).toEqual({ reaped: 0, ids: [] });
+    expect(del).not.toHaveBeenCalled();
+    expect(listSessions().map((s) => s.sessionId)).toContain('s-disabled');
+  });
+
+  test('closes a session idle longer than the threshold', async () => {
+    const del = jest.fn(async () => {});
+    setSession(makeMockDriver(del), 's-idle');
+    await sleep(30);
+    const res = await reapIdleSessions(10);
+    expect(res.reaped).toBe(1);
+    expect(res.ids).toEqual(['s-idle']);
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(listSessions()).toHaveLength(0);
+  });
+
+  test('spares a session whose activity clock was just bumped', async () => {
+    const del = jest.fn(async () => {});
+    setSession(makeMockDriver(del), 's-fresh');
+    await sleep(30);
+    touchActiveSession(); // fresh again
+    const res = await reapIdleSessions(10);
+    expect(res.reaped).toBe(0);
+    expect(del).not.toHaveBeenCalled();
+    expect(listSessions().map((s) => s.sessionId)).toContain('s-fresh');
   });
 });

@@ -4,6 +4,7 @@ import registerResources from './resources/index.js';
 import {
   listSessions,
   safeDeleteAllSessions,
+  reapIdleSessions,
   safeDeleteSessionsForConnection,
 } from './session-store.js';
 import { runWithConnection } from './connection-context.js';
@@ -124,5 +125,47 @@ async function shutdown(signal: string): Promise<void> {
 }
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
+
+// ── Idle session reaper ────────────────────────────────────────────────────
+// "Clean up browsers when not needed." In the shared httpStream backend a
+// client that walks away leaves its browser running (transport disconnect is
+// not a reliable client-gone signal, so it's ignored). The reaper closes any
+// session with no tool activity for APPIUM_MCP_IDLE_REAP_MS (default 5 min;
+// set 0 to disable). It runs on a timer AND on demand via SIGUSR2 — the plugin's
+// session-end hook sends SIGUSR2 so idle browsers are cleaned the moment a
+// Claude session ends, without waiting for the next tick. A session another
+// client is still driving keeps a fresh activity clock and is never reaped.
+function idleReapMs(): number {
+  const raw = process.env['APPIUM_MCP_IDLE_REAP_MS'];
+  if (raw == null || raw.trim() === '') return 5 * 60 * 1000;
+  const n = Number(raw.trim());
+  return Number.isFinite(n) && n >= 0 ? n : 5 * 60 * 1000;
+}
+
+async function reapNow(trigger: string): Promise<void> {
+  const idleMs = idleReapMs();
+  if (idleMs === 0) return; // disabled
+  try {
+    const { reaped, ids } = await reapIdleSessions(idleMs);
+    if (reaped > 0) {
+      log.info(`Idle reaper (${trigger}) closed ${reaped} session(s): ${ids.join(', ')}`);
+    }
+  } catch (error) {
+    log.error(`Idle reaper (${trigger}) error:`, error);
+  }
+}
+
+if (idleReapMs() > 0) {
+  // Sweep on a timer as the autonomous backstop. Interval is a quarter of the
+  // idle window, clamped to [30s, 5m], so a stale browser is caught promptly
+  // without busy-looping.
+  const tick = Math.min(5 * 60 * 1000, Math.max(30 * 1000, Math.floor(idleReapMs() / 4)));
+  const timer = setInterval(() => void reapNow('timer'), tick);
+  timer.unref?.(); // never keep the process alive just for the reaper
+}
+
+// On-demand sweep: the plugin session-end hook sends SIGUSR2 to force an
+// immediate cleanup of idle browsers when a Claude session ends.
+process.on('SIGUSR2', () => void reapNow('SIGUSR2'));
 
 export default server;

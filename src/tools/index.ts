@@ -14,6 +14,7 @@
  */
 import { FastMCP } from 'fastmcp';
 import log from '../logger.js';
+import { touchActiveSession } from '../session-store.js';
 import answerAppium from './documentation/answer-appium.js';
 import createSession from './session/create-session.js';
 import deleteSession from './session/delete-session.js';
@@ -143,6 +144,9 @@ export default function registerTools(server: FastMCP): void {
       execute: async (args: any, context: any) => {
         const start = Date.now();
         log.info(`[TOOL START] ${toolName}`, redactArgs(args));
+        // Keep the active session's idle clock fresh so the reaper only
+        // closes browsers/drivers that are genuinely unused.
+        try { touchActiveSession(); } catch { /* no active session yet */ }
         try {
           const result = await originalExecute(args, context);
           const duration = Date.now() - start;

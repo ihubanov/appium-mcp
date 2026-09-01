@@ -1,0 +1,8 @@
+{
+  "name": "appium-web-driving",
+  "description": "Human-like web driving for the appium-mcp server: a skill that teaches the run_script patterns (navigation survival, hidden-modal reveal, resume-on-error), a context-isolated browser-driver subagent, and a session-end hook that reaps idle browsers.",
+  "version": "0.1.0",
+  "author": {
+    "name": "ihubanov"
+  }
+}

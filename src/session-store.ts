@@ -33,6 +33,14 @@ interface SessionInfo {
    * another client's session after a deletion.
    */
   ownerConnection: string;
+  /**
+   * Epoch ms of the last tool call that touched this session. Used by the
+   * idle reaper to close browsers/drivers that have gone unused, so a session
+   * whose owning client walked away (common in the shared httpStream backend,
+   * where transport disconnect is NOT a reliable "client gone" signal) doesn't
+   * leak a headed browser forever.
+   */
+  lastActivity: number;
 }
 
 /**
@@ -163,8 +171,49 @@ export function setSession(
     isDeletingSession: false,
     metadata,
     ownerConnection: currentConnectionId(),
+    lastActivity: Date.now(),
   });
   setActiveSessionForCurrent(id);
+}
+
+/**
+ * Bump the last-activity clock on the active session for the client making the
+ * current tool call. Called by the tool wrapper on every invocation so the
+ * idle reaper only closes genuinely-unused sessions.
+ */
+export function touchActiveSession(): void {
+  const id = getActiveSessionId();
+  if (!id) return;
+  const s = sessions.get(id);
+  if (s) s.lastActivity = Date.now();
+}
+
+/**
+ * Close every session idle for longer than `idleMs` (no tool call touched it
+ * in that window). Skips sessions mid-deletion. Returns what was reaped. A
+ * session actively used by ANY client keeps a recent lastActivity, so this is
+ * safe to run against the shared backend — it won't kill a browser another
+ * Claude instance is still driving.
+ */
+export async function reapIdleSessions(
+  idleMs: number
+): Promise<{ reaped: number; ids: string[] }> {
+  if (!(idleMs > 0)) return { reaped: 0, ids: [] };
+  const now = Date.now();
+  const stale = Array.from(sessions.values())
+    .filter((s) => !s.isDeletingSession && now - s.lastActivity > idleMs)
+    .map((s) => s.sessionId);
+
+  const reapedIds: string[] = [];
+  for (const sessionId of stale) {
+    try {
+      const deleted = await safeDeleteSession(sessionId);
+      if (deleted) reapedIds.push(sessionId);
+    } catch (error) {
+      log.error(`Error reaping idle session ${sessionId}:`, error);
+    }
+  }
+  return { reaped: reapedIds.length, ids: reapedIds };
 }
 
 export function getDriver(sessionId?: string): NullableDriverInstance {
