@@ -29,13 +29,21 @@ The appium-mcp web tools drive a **real** browser (real JS, cookies, redirects, 
 
 ## When the DOM has nothing: the vision rung
 
-Canvas, WebGL, embedded viewers (PDFs, maps) and images have **no locatable DOM nodes** — every selector fails. For those, add a `visual` hint naming the control's **visible label** on click/fill/type steps:
+Canvas, WebGL, embedded viewers (PDFs, maps) and images have **no locatable DOM nodes** — every selector fails. For those, add a `visual` hint on click/fill/type steps. Two forms, strongest signal first:
 
+**1. Visible text label** — the control has readable text:
 ```json
 { "action": "click", "selector": "#canvas-app", "visual": "Sign in to Portal" }
 ```
+OCR grounds the label; when an icon detector is also configured, the match is refined to the detected *control* region — click the button, not its caption (`via: "vision"`, backend `tesseract+onnx`).
 
-When the DOM path finds nothing, the engine screenshots the page, OCR-grounds the label (tesseract sidecar; an ONNX/YOLO detector can be configured via `APPIUM_MCP_VISION_MODEL`), and clicks the pixels that match — reported as `via: "vision"`. Partial matches count: if OCR clearly reads half the label's words, that grounds. Prefer the full visible text of the button/link. Vision works for `click`/`fill`/`type` only (a pixel box can't drive hover/select semantics), is lazy (the sidecar only spawns when a visual hint actually fires), and can be disabled with `APPIUM_MCP_VISION=0`.
+**2. Position hint** — icon-only control, nothing readable:
+```json
+{ "action": "click", "selector": "#canvas-app", "visual": "hamburger menu icon top left" }
+```
+The icon detector (OmniParser YOLOv9-E, MIT) finds interactive regions; the named screen zone (`top left`, `top right`, `bottom left`, `bottom right`, `center`) picks the right one. Good for ✕ close buttons, hamburger menus, play icons in canvas apps.
+
+Partial OCR matches count (half the label's words, contiguous). Vision works for `click`/`fill`/`type` only, is lazy (the sidecar spawns on first use), and can be disabled with `APPIUM_MCP_VISION=0`. The detector needs `APPIUM_MCP_VISION_MODEL` (path to the `.onnx`) and usually `APPIUM_MCP_VISION_PYTHON` (a venv interpreter with `onnxruntime` — system Pythons too new for wheels are fine to skip via this override). Without a detector, OCR-only still grounds text labels; icon-only targets need the position form *and* a detector.
 
 ## Example — log in and verify, across the navigation
 

@@ -15,3 +15,7 @@ package-lock.json
 # local machine-specific MCP config & TS build cache
 .mcp.json
 tsconfig.tsbuildinfo
+
+# vision grounding artifacts
+.vision-model/
+.venv-vision/

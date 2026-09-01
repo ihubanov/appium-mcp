@@ -46,6 +46,12 @@ import time
 MODEL_PATH = os.environ.get("APPIUM_MCP_VISION_MODEL") or None
 TESSERACT = shutil.which("tesseract")
 
+# OmniParser defaults for the YOLOv9-E icon detector.
+ONNX_CONF = 0.05
+ONNX_IOU = 0.1
+
+_ORT_SESSION = None  # cached onnxruntime session (weights load is ~100ms)
+
 
 # ── backends ────────────────────────────────────────────────────────────────
 
@@ -170,32 +176,135 @@ def ground_tesseract(png: str, target: str) -> dict | None:
     return None
 
 
-def detect_onnx(png: str, width: int, height: int) -> list[dict]:
-    """Run the ONNX detector over the screenshot (optional backend)."""
+def detect_onnx(png: str) -> list[dict]:
+    """Run the icon detector (OmniParser YOLOv9-E ONNX export) over the
+    screenshot. Returns xyxy regions in ORIGINAL pixel coordinates.
+
+    Model I/O (verified against onnx-community/OmniParser-icon_detect):
+      input  "images" [1,3,H,W] float, H/W dynamic but multiples of 16
+             (preprocessor_config: longest edge 640, divisor 16, bilinear,
+             rescale 1/255, no normalize)
+      output [1,5,N] = cx, cy, w, h, conf  (single class: interactive icon)
+    """
     import numpy as np
     from PIL import Image
     import onnxruntime as ort
 
+    global _ORT_SESSION
+    if _ORT_SESSION is None:
+        _ORT_SESSION = ort.InferenceSession(
+            MODEL_PATH, providers=["CPUExecutionProvider"]
+        )
+    sess = _ORT_SESSION
+
     img = Image.open(png).convert("RGB")
     scale = min(640 / img.width, 640 / img.height, 1.0)
-    resized = img.resize((int(img.width * scale), int(img.height * scale)))
-    arr = np.asarray(resized).astype(np.float32) / 255.0
-    arr = arr.transpose(2, 0, 1)[None]  # 1x3xHxW, 0..1
+    w = max(16, int(img.width * scale) // 16 * 16)
+    h = max(16, int(img.height * scale) // 16 * 16)
+    arr = np.asarray(img.resize((w, h), Image.BILINEAR)).astype(np.float32) / 255.0
+    arr = arr.transpose(2, 0, 1)[None]
 
-    sess = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
-    out = sess.run(None, {sess.get_inputs()[0].name: arr})[0]
+    out = np.asarray(sess.run(None, {sess.get_inputs()[0].name: arr})[0])[0].T
+    sel = out[out[:, 4] > ONNX_CONF]
+    if sel.size == 0:
+        return []
 
-    regions = []
-    for det in np.asarray(out).reshape(-1, 6):
-        x1, y1, x2, y2, score, cls = det
-        if score < 0.35:
-            continue
-        regions.append({
-            "x": float(x1) / scale, "y": float(y1) / scale,
-            "w": float(x2 - x1) / scale, "h": float(y2 - y1) / scale,
-            "label": str(int(cls)), "confidence": float(score),
-        })
-    return regions
+    # cxcywh (model scale) -> xyxy (original scale)
+    c = sel[:, :4] / scale
+    xyxy = np.stack(
+        [c[:, 0] - c[:, 2] / 2, c[:, 1] - c[:, 3] / 2,
+         c[:, 0] + c[:, 2] / 2, c[:, 1] + c[:, 3] / 2], axis=1)
+
+    # NMS at OmniParser's iou=0.1
+    scores = sel[:, 4]
+    keep: list[int] = []
+    order = scores.argsort()[::-1]
+    while order.size:
+        i = order[0]
+        keep.append(int(i))
+        if order.size == 1:
+            break
+        xx = np.maximum(xyxy[i, 0], xyxy[order[1:], 0])
+        yy = np.maximum(xyxy[i, 1], xyxy[order[1:], 1])
+        x2 = np.minimum(xyxy[i, 2], xyxy[order[1:], 2])
+        y2 = np.minimum(xyxy[i, 3], xyxy[order[1:], 3])
+        inter = np.maximum(0, x2 - xx) * np.maximum(0, y2 - yy)
+        a1 = (xyxy[i, 2] - xyxy[i, 0]) * (xyxy[i, 3] - xyxy[i, 1])
+        a2 = (xyxy[order[1:], 2] - xyxy[order[1:], 0]) * \
+             (xyxy[order[1:], 3] - xyxy[order[1:], 1])
+        iou = inter / (a1 + a2 - inter + 1e-9)
+        order = order[1:][iou <= ONNX_IOU]
+
+    return [
+        {
+            "x": float(xyxy[i, 0]), "y": float(xyxy[i, 1]),
+            "w": float(xyxy[i, 2] - xyxy[i, 0]),
+            "h": float(xyxy[i, 3] - xyxy[i, 1]),
+            "confidence": float(scores[i]),
+        }
+        for i in keep
+    ]
+
+
+# ── positional grounding (icon-only targets) ────────────────────────────────
+# An icon with no readable text can't be matched by label. The hint can name
+# WHERE it is on screen instead — "hamburger menu top left", "X close button
+# top right", "play button center" — and we pick the highest-confidence
+# detected interactive region in that zone.
+
+POSITION_PHRASES = [
+    "top left", "top right", "bottom left", "bottom right",
+    "top center", "bottom center", "center", "middle",
+]
+
+
+def extract_position(target: str) -> tuple[str | None, str]:
+    """Split a target like "X close button top right" into
+    ("top right", "X close button"). Position words are removed from the
+    text label so they never pollute the OCR word match."""
+    t = target.lower()
+    for phrase in POSITION_PHRASES:
+        if phrase in t:
+            label = target.lower().replace(phrase, " ").strip()
+            return phrase, " ".join(label.split())
+    return None, t
+
+
+def region_in_zone(region: dict, zone: str, img_w: int, img_h: int) -> bool:
+    cx = (region["x"] + region["w"] / 2) / max(img_w, 1)
+    cy = (region["y"] + region["h"] / 2) / max(img_h, 1)
+    top, bottom, left, right = cy < 1 / 3, cy > 2 / 3, cx < 1 / 3, cx > 2 / 3
+    horiz_mid = 1 / 3 <= cx <= 2 / 3
+    vert_mid = 1 / 3 <= cy <= 2 / 3
+    return {
+        "top left": top and left,
+        "top right": top and right,
+        "bottom left": bottom and left,
+        "bottom right": bottom and right,
+        "top center": top and horiz_mid,
+        "bottom center": bottom and horiz_mid,
+        "center": vert_mid and horiz_mid,
+        "middle": vert_mid and horiz_mid,
+    }.get(zone, False)
+
+
+def refine_to_control(label_box: dict, regions: list[dict]) -> dict | None:
+    """When OCR located a text label, the actual clickable control is often
+    BIGGER than the text (button chrome, icon next to label). If a detected
+    interactive region overlaps the label box well, return the control's
+    box instead — click the button, not its caption."""
+    lx1, ly1 = label_box["x"], label_box["y"]
+    lx2, ly2 = lx1 + label_box["w"], ly1 + label_box["h"]
+    l_area = max(label_box["w"] * label_box["h"], 1)
+    best = None
+    for r in regions:
+        rx2, ry2 = r["x"] + r["w"], r["y"] + r["h"]
+        ix = max(0, min(lx2, rx2) - max(lx1, r["x"]))
+        iy = max(0, min(ly2, ry2) - max(ly1, r["y"]))
+        if ix * iy / l_area > 0.5:  # region covers most of the label
+            if best is None or r["confidence"] > best["confidence"]:
+                best = r
+    return best
 
 
 # ── request handling ────────────────────────────────────────────────────────
@@ -221,27 +330,66 @@ def handle(req: dict) -> dict:
         try:
             decode_png(b64, png)
 
-            if op == "ground":
-                target = (req.get("target") or "").strip()
-                if not target:
-                    return {"ok": False, "reason": "missing target text"}
-                if not TESSERACT:
+            if op == "detect":
+                if not have_onnx():
                     return {"ok": False,
-                            "reason": "tesseract binary not found on PATH"}
-                match = ground_tesseract(png, target)
-                if match is None:
-                    return {"ok": False,
-                            "reason": f"label {target!r} not found on screen"}
-                return {"ok": True, "match": match}
+                            "reason": "onnx backend not configured "
+                                      "(set APPIUM_MCP_VISION_MODEL)"}
+                return {"ok": True, "regions": detect_onnx(png)}
 
-            # op == "detect"
-            if not have_onnx():
-                return {"ok": False,
-                        "reason": "onnx backend not configured "
-                                  "(set APPIUM_MCP_VISION_MODEL)"}
-            regions = detect_onnx(png, req.get("width") or 0,
-                                  req.get("height") or 0)
-            return {"ok": True, "regions": regions}
+            # op == "ground": the full ladder, strongest signal first.
+            target = (req.get("target") or "").strip()
+            if not target:
+                return {"ok": False, "reason": "missing target text"}
+            zone, text_label = extract_position(target)
+
+            regions: list[dict] = []
+            if have_onnx():
+                try:
+                    regions = detect_onnx(png)
+                except Exception:
+                    regions = []  # degrade to OCR-only, never fail the rung
+
+            # 1. OCR text match on the label (position words stripped).
+            label_box = None
+            if text_label and TESSERACT:
+                label_box = ground_tesseract(png, text_label)
+
+            if label_box is not None:
+                # 2. If a detected interactive control covers the label,
+                #    click the control (button) rather than the caption.
+                control = refine_to_control(label_box, regions)
+                if control is not None:
+                    return {"ok": True, "match": {
+                        **control, "text": text_label,
+                        "backend": "tesseract+onnx"}}
+                return {"ok": True, "match": {
+                    **label_box, "backend": "tesseract"}}
+
+            # 3. Icon-only: no readable text matched. Use the zone the hint
+            #    named ("top right", "center", …) to pick a detected region.
+            if zone and regions:
+                from PIL import Image
+                img = Image.open(png)
+                in_zone = [r for r in regions
+                           if region_in_zone(r, zone, img.width, img.height)]
+                if in_zone:
+                    best = max(in_zone, key=lambda r: r["confidence"])
+                    return {"ok": True, "match": {
+                        **best, "text": zone, "backend": "onnx"}}
+
+            # 4. Last resort: a single detected interactive region is
+            #    unambiguous by construction.
+            if label_box is None and len(regions) == 1:
+                return {"ok": True, "match": {
+                    **regions[0], "text": target, "backend": "onnx"}}
+
+            why = f"label {text_label!r} not found on screen"
+            if regions:
+                why += (f" ({len(regions)} interactive region(s) detected — "
+                        "add a position like 'top right' to the visual hint "
+                        "to pick one)")
+            return {"ok": False, "reason": why}
         finally:
             try:
                 os.unlink(png)

@@ -46,9 +46,16 @@ function sidecarScript(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'vision-grounding.py');
 }
 
+function sidecarPython(): string {
+  // onnxruntime has no wheels for every Python (3.14 notably), so when an
+  // ONNX detector is configured the sidecar usually needs to run inside a
+  // venv — point APPIUM_MCP_VISION_PYTHON at that interpreter.
+  return process.env['APPIUM_MCP_VISION_PYTHON'] ?? 'python3';
+}
+
 function ensureSidecar(): ChildProcess {
   if (sidecar && !sidecarDead) return sidecar;
-  const proc = spawn('python3', [sidecarScript()], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn(sidecarPython(), [sidecarScript()], { stdio: ['pipe', 'pipe', 'pipe'] });
   sidecarDead = false;
   proc.on('exit', () => {
     sidecarDead = true;

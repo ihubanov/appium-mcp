@@ -55,9 +55,11 @@ const stepSchema = z.object({
     .string()
     .optional()
     .describe(
-      'Visible label to look for ON SCREEN when DOM selectors fail (canvas, WebGL, embedded viewers, images). ' +
-      'E.g. visual: "Sign in" grounds the pixels that read "Sign in" via OCR and clicks there. ' +
-      'Works for click/fill/type steps only.'
+      'What the control LOOKS like, for when DOM selectors fail (canvas, WebGL, embedded viewers, images). ' +
+      'Two forms: a visible text label ("Sign in") — grounded via OCR, and refined to the detected control region ' +
+      'when an icon detector is configured; or, for icon-only controls with no readable text, a position hint ' +
+      '("hamburger menu icon top left", "close X top right", "play button center") — grounded via the icon detector ' +
+      'within that screen zone. Works for click/fill/type steps only.'
     ),
 });
 
