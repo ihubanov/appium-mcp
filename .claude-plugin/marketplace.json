@@ -1,0 +1,14 @@
+{
+  "name": "appium-mcp",
+  "owner": {
+    "name": "ihubanov"
+  },
+  "plugins": [
+    {
+      "name": "appium-web-driving",
+      "source": "./",
+      "description": "Web-driving skill, browser-driver subagent, and idle-browser cleanup hook for the appium-mcp server. The MCP server itself stays external (SSE at the shared backend) by design.",
+      "version": "0.1.0"
+    }
+  ]
+}
