@@ -56,6 +56,12 @@ function sidecarPython(): string {
 function ensureSidecar(): ChildProcess {
   if (sidecar && !sidecarDead) return sidecar;
   const proc = spawn(sidecarPython(), [sidecarScript()], { stdio: ['pipe', 'pipe', 'pipe'] });
+  proc.on('error', (err) => {
+    // ENOENT on the interpreter, etc. — without this the pending request
+    // would only fail via the timeout, hiding the real cause.
+    sidecarDead = true;
+    console.error(`[vision-grounding] failed to spawn ${sidecarPython()}: ${err.message}`);
+  });
   sidecarDead = false;
   proc.on('exit', () => {
     sidecarDead = true;
@@ -180,7 +186,8 @@ export async function groundLabelOnPage(
   let screenshot: Buffer;
   try {
     screenshot = await page.screenshot({ type: 'png' });
-  } catch {
+  } catch (err) {
+    console.error(`[vision-grounding] screenshot failed: ${errMsg(err)}`);
     return null; // page closed mid-flight, CDP hiccup — not our problem to solve
   }
 
@@ -201,7 +208,10 @@ export async function groundLabelOnPage(
       },
       timeoutMs,
     );
-    if (!resp.ok || !resp.match) return null;
+    if (!resp.ok || !resp.match) {
+      console.error(`[vision-grounding] no match for ${JSON.stringify(target)}: ${resp.reason ?? 'no match in response'}`);
+      return null;
+    }
     const m = resp.match;
     return {
       // Match region (top-left, screenshot px) → viewport px, centered.
@@ -212,7 +222,12 @@ export async function groundLabelOnPage(
       text: m.text,
       backend: m.backend,
     };
-  } catch {
+  } catch (err) {
+    console.error(`[vision-grounding] sidecar request failed: ${errMsg(err)}`);
     return null;
   }
+}
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
