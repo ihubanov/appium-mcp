@@ -29,6 +29,11 @@
 #   --with-vision       build the OCR+YOLO sidecar venv and fetch the MIT
 #                       OmniParser icon-detect weights (needs python3.11)
 #   --with-chromium     install Playwright's chromium for detached mode
+#   --quiet             fire-and-forget: all output to --log-file, silent
+#                       terminal, machine-readable exit (0=installed+healthy,
+#                       1=failed); final log line is always "RESULT: ..."
+#   --log-file PATH     where --quiet logs (default
+#                       $XDG_CACHE_HOME/appium-mcp/install-backend.log)
 #   --force             overwrite existing unit files (drop-ins are kept)
 #
 set -euo pipefail
@@ -37,8 +42,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_PORT="${APPIUM_MCP_BACKEND_PORT:-18766}"
 PROXY_PORT="${APPIUM_MCP_PROXY_PORT:-8766}"
 UNITS_DIR="$HOME/.config/systemd/user"
-FORCE=0 WITH_VISION=0 WITH_CHROMIUM=0 CDP_REQUIRED=0
+FORCE=0 WITH_VISION=0 WITH_CHROMIUM=0 CDP_REQUIRED=0 QUIET=0
 CDP_ENDPOINT=""
+LOG_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/appium-mcp/install-backend.log"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -48,14 +54,29 @@ while [ $# -gt 0 ]; do
     --cdp-required) CDP_REQUIRED=1; shift ;;
     --with-vision) WITH_VISION=1; shift ;;
     --with-chromium) WITH_CHROMIUM=1; shift ;;
+    --quiet) QUIET=1; shift ;;
+    --log-file) LOG_FILE="$2"; shift 2 ;;
     --force) FORCE=1; shift ;;
     -h|--help) grep '^# \{0,1\}' "$0" | grep -v '^#!' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1 (see --help)" >&2; exit 2 ;;
   esac
 done
 
+# --quiet: fire-and-forget mode for orchestrators (claude-local's first-run
+# auto-install). ALL output goes to LOG_FILE, stdout/stderr stay silent, and
+# the exit code is machine-readable: 0 = installed & healthy, 1 = failed
+# (last log lines explain why). A RESULT: line is always the final line.
+if [ "$QUIET" = 1 ]; then
+  mkdir -p "$(dirname "$LOG_FILE")"
+  exec >>"$LOG_FILE" 2>&1
+  echo ""
+  echo "=== install-backend.sh --quiet run at $(date -Is) ==="
+fi
+result() { echo "RESULT: $1"; }
+trap 'result "FAILED (see lines above)"; exit 1' ERR
+
 step() { printf '\n==> %s\n' "$*"; }
-die()  { echo "ERROR: $*" >&2; exit 1; }
+die()  { echo "ERROR: $*" >&2; result "FAILED — $*"; exit 1; }
 
 [ "$(id -u)" -ne 0 ] || die "run as your normal user — everything here is user-level"
 step "Sanity checks"
@@ -189,6 +210,7 @@ for i in $(seq 1 30); do
     echo
     echo "Done. Clients (claude-local plugin manifest, official global config) should point at:"
     echo "  http://127.0.0.1:$PROXY_PORT/sse"
+    result "OK"
     exit 0
   fi
   sleep 1
