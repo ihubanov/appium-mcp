@@ -383,6 +383,19 @@ export default function createSession(server: any): void {
           // a fresh browser. New tabs/pages opened by the AI then appear
           // in the user's already-open Chromium window.
           const cdpEndpoint = process.env.APPIUM_MCP_CDP_ENDPOINT;
+          // Hard-fail mode (shared-display deployments, e.g. herdr-share):
+          // when APPIUM_MCP_CDP_REQUIRED is set, a failed attach MUST throw
+          // instead of silently falling back to a detached launch — a
+          // fallback browser is invisible to whoever is watching the
+          // shared display, which is exactly the failure this prevents.
+          const cdpRequired = /^(1|true|yes)$/i.test(
+            (process.env.APPIUM_MCP_CDP_REQUIRED ?? '').trim()
+          );
+          if (cdpRequired && !cdpEndpoint) {
+            throw new Error(
+              'APPIUM_MCP_CDP_REQUIRED is set but APPIUM_MCP_CDP_ENDPOINT is not — refusing to launch a detached browser.'
+            );
+          }
           let browser!: import('playwright').Browser;
           let context!: import('playwright').BrowserContext;
           let page!: import('playwright').Page;
@@ -426,6 +439,11 @@ export default function createSession(server: any): void {
               page = pg;
               attachedToUserBrowser = true;
             } catch (e) {
+              if (cdpRequired) {
+                throw new Error(
+                  `CDP attach to ${cdpEndpoint} failed (${(e as Error).message}) and APPIUM_MCP_CDP_REQUIRED is set — NOT falling back to a detached launch. Is the shared browser up?`
+                );
+              }
               log.warn(
                 `Could not attach to CDP endpoint ${cdpEndpoint} (${(e as Error).message}); the user's browser is probably not running. Falling back to a detached launch.`
               );
@@ -434,6 +452,11 @@ export default function createSession(server: any): void {
 
           if (!attachedToUserBrowser) {
             if (cdpEndpoint && browserType !== 'chromium') {
+              if (cdpRequired) {
+                throw new Error(
+                  `APPIUM_MCP_CDP_REQUIRED is set but browserType=${browserType}; CDP attach only supports chromium.`
+                );
+              }
               log.warn(
                 `APPIUM_MCP_CDP_ENDPOINT is set but browserType=${browserType}; CDP attach only supports chromium. Falling back to launch().`
               );
