@@ -413,11 +413,11 @@ export default function createSession(server: any): void {
             try {
               const b = await chromium.connectOverCDP(cdpEndpoint);
               const contexts = b.contexts();
-              const ctx = contexts[0] ?? (await b.newContext({
-                viewport,
-                userAgent:
-                  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-              }));
+              // viewport:null and no userAgent override — the user's real
+              // Chrome already sends a correct, self-consistent UA + client
+              // hints; a hardcoded string drifts from the real version and
+              // flags as automation. viewport:null lets pages fill the window.
+              const ctx = contexts[0] ?? (await b.newContext({ viewport: null }));
               // CDP-attach: do NOT create a new page on session creation.
               // The user already sees their open tabs in the host Chromium;
               // opening a blank tab here would pollute the tab list before
@@ -438,6 +438,16 @@ export default function createSession(server: any): void {
               context = ctx;
               page = pg;
               attachedToUserBrowser = true;
+              // Make the page fill the real browser window. Playwright over
+              // CDP otherwise leaves a fixed viewport emulation (~1280x720),
+              // so the page renders into a small box with dead space around it
+              // (the "page doesn't cover the window" symptom). Clearing the
+              // device-metrics override lets the page track the actual window.
+              try {
+                const vp = await ctx.newCDPSession(pg);
+                await vp.send('Emulation.clearDeviceMetricsOverride');
+                await vp.detach().catch(() => {});
+              } catch { /* best-effort */ }
             } catch (e) {
               if (cdpRequired) {
                 throw new Error(
@@ -506,8 +516,6 @@ export default function createSession(server: any): void {
             // Set APPIUM_MCP_STEALTH=0 to opt back into plain launch.
             const stealth =
               isChromium && process.env.APPIUM_MCP_STEALTH !== '0';
-            const chromeUA =
-              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
             if (stealth) {
               const launchOpts = {
@@ -542,9 +550,10 @@ export default function createSession(server: any): void {
 
             context = await browser.newContext({
               viewport,
-              userAgent: stealth
-                ? chromeUA
-                : 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+              // No userAgent override: a hardcoded string drifts from the real
+              // Chrome version and desyncs from navigator.userAgentData /
+              // client hints, which is itself a bot signal. The real Chrome
+              // channel already sends a correct, consistent UA.
               locale: 'en-US',
               timezoneId: 'Europe/Sofia',
             });
