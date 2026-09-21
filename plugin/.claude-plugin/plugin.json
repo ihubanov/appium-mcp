@@ -1,0 +1,8 @@
+{
+  "name": "appium-web-driving",
+  "description": "Appium/Playwright automation, all in one: bundles the appium-mcp server (stdio, spawned per session from the local build), the web-driving skill, the browser-driver subagent, and a browser-close cleanup hook. Tools are exposed as mcp__plugin_appium-web-driving_appium-mcp__*.",
+  "version": "0.2.0",
+  "author": {
+    "name": "ihubanov"
+  }
+}

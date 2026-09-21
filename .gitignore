@@ -19,3 +19,4 @@ tsconfig.tsbuildinfo
 # vision grounding artifacts
 .vision-model/
 .venv-vision/
+!/plugin/.mcp.json

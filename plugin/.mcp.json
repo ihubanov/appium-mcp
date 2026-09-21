@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "appium-mcp": {
+      "command": "node",
+      "args": ["/media/data/fun-noSync/tools/appium-mcp/dist/index.js"],
+      "cwd": "/media/data/fun-noSync/tools/appium-mcp",
+      "env": {
+        "NODE_ENV": "production",
+        "APPIUM_MCP_RESPECT_USER_FOCUS": "false",
+        "APPIUM_MCP_CDP_ENDPOINT": "http://localhost:9222",
+        "APPIUM_MCP_VISION_MODEL": "/media/data/fun-noSync/tools/appium-mcp/.vision-model/icon_detect.onnx",
+        "APPIUM_MCP_VISION_PYTHON": "/media/data/fun-noSync/tools/appium-mcp/.venv-vision/bin/python"
+      }
+    }
+  }
+}

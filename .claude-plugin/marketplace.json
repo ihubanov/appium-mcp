@@ -6,9 +6,9 @@
   "plugins": [
     {
       "name": "appium-web-driving",
-      "source": "./",
-      "description": "Web-driving skill, browser-driver subagent, and idle-browser cleanup hook for the appium-mcp server. The MCP server itself stays external (SSE at the shared backend) by design.",
-      "version": "0.1.0"
+      "source": "./plugin",
+      "description": "Appium/Playwright web + mobile automation, bundled: the appium-mcp server (stdio, per session), the web-driving skill, the browser-driver subagent, and a browser-close cleanup hook.",
+      "version": "0.2.0"
     }
   ]
 }
