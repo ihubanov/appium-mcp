@@ -4,6 +4,7 @@ import type { Client } from 'webdriver';
 import { PlaywrightDriver } from './playwright-adapter.js';
 import log from './logger.js';
 import { currentConnectionId } from './connection-context.js';
+import { logActivity } from './activity-log.js';
 
 // Type aliases for driver variants used throughout the project.
 export type DriverInstance =
@@ -214,6 +215,39 @@ export async function reapIdleSessions(
     }
   }
   return { reaped: reapedIds.length, ids: reapedIds };
+}
+
+/**
+ * Drop a session whose underlying browser/driver has ALREADY gone away — the
+ * user closed the CDP-attached Chrome, it crashed, or it was killed. Unlike
+ * safeDeleteSession this does NOT call driver.deleteSession(): the browser is
+ * dead, so there is nothing to close and talking to it would only throw. We
+ * remove the session and any active-pointer referencing it, so the next tool
+ * call reports a clean "no web session — create one" instead of a stream of
+ * cryptic "Target closed" errors. Intentional teardown sets isDeletingSession
+ * first, so this no-ops there and never double-handles.
+ */
+export function dropDisconnectedSession(
+  sessionId: string,
+  reason = 'browser closed'
+): boolean {
+  const s = sessions.get(sessionId);
+  if (!s || s.isDeletingSession) return false;
+  sessions.delete(sessionId);
+  for (const [conn, id] of activeSessionByConnection.entries()) {
+    if (id === sessionId) activeSessionByConnection.delete(conn);
+  }
+  log.info(`Session ${sessionId} dropped: ${reason} (browser gone).`);
+  try {
+    logActivity({
+      tool: 'browser_disconnected',
+      status: 'ok',
+      detail: `${sessionId}: ${reason}`,
+    });
+  } catch {
+    /* advisory only */
+  }
+  return true;
 }
 
 export function getDriver(sessionId?: string): NullableDriverInstance {

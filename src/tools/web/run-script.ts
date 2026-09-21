@@ -98,6 +98,15 @@ export default function runScriptTool(server: FastMCP): void {
       .number()
       .optional()
       .describe('Per-step normal-attempt timeout in ms (default 5000).'),
+    tab: z
+      .string()
+      .optional()
+      .describe(
+        'Stable tab id (from playwright_list_tabs) to run this script against. ' +
+          'Omit to use the AI-active tab. Targeting a tab id drives that tab DIRECTLY ' +
+          'without changing the active-tab pointer or foregrounding it — so several ' +
+          'tabs can be driven independently/concurrently without interfering.'
+      ),
   });
 
   server.addTool({
@@ -143,11 +152,27 @@ export default function runScriptTool(server: FastMCP): void {
         throw new Error('Provide `steps` to run, or a `resume` continuation id.');
       }
 
-      // Fail fast against the current page before we start.
-      assertNotProtected(driver.page.url(), 'run script on');
-      await assertNotUserFocused(driver.page, 'run script on');
+      // Resolve the target tab: an explicit stable id, or the active page.
+      // Targeting a tab id drives that (possibly background) tab directly,
+      // leaving the active-tab pointer untouched so concurrent per-tab runs
+      // don't clobber each other.
+      let targetPage = driver.page;
+      if (args.tab) {
+        const p = driver.resolvePage(args.tab);
+        if (!p) {
+          throw new Error(
+            `Unknown tab id "${args.tab}" (it may have been closed). Call playwright_list_tabs for current tab ids.`
+          );
+        }
+        targetPage = p;
+      }
+      const targetTabId = driver.getTabId(targetPage);
 
-      const result = await runScript(driver.page, steps, {
+      // Fail fast against the target page before we start.
+      assertNotProtected(targetPage.url(), 'run script on');
+      await assertNotUserFocused(targetPage, 'run script on');
+
+      const result = await runScript(targetPage, steps, {
         humanize: args.humanize,
         stopOnError: args.stopOnError,
         pauseAfter: args.pauseAfter,
@@ -177,6 +202,7 @@ export default function runScriptTool(server: FastMCP): void {
         finished: result.finished,
         completed: result.completed,
         total: result.total,
+        tab: targetTabId,
         finalUrl: result.finalUrl,
         ...(continuationId ? { continuationId } : {}),
         ...(result.remaining ? { remaining: result.remaining.length } : {}),

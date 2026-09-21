@@ -7,7 +7,7 @@ import { constants } from 'node:fs';
 import { URL } from 'node:url';
 import { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
 import { XCUITestDriver } from 'appium-xcuitest-driver';
-import { setSession, listSessions } from '../../session-store.js';
+import { setSession, listSessions, dropDisconnectedSession } from '../../session-store.js';
 import {
   getSelectedDevice,
   getSelectedDeviceType,
@@ -600,6 +600,18 @@ export default function createSession(server: any): void {
             attachedToUserBrowser,
           };
           setSession(pwDriver, sessionId, webCapabilities);
+
+          // Auto-cleanup on browser close. If this browser goes away
+          // unexpectedly — the user closes the CDP-attached Chrome, it
+          // crashes, or is killed — Playwright emits 'disconnected'. Drop the
+          // session so the next tool call reports a clean "no web session"
+          // instead of a pile of "Target closed" errors, and leave a trace in
+          // the activity log so agents can see the browser vanished.
+          // Intentional teardown (delete_session) sets isDeletingSession
+          // first, so dropDisconnectedSession no-ops there.
+          browser.on('disconnected', () => {
+            dropDisconnectedSession(sessionId, 'attached browser closed');
+          });
 
           log.info(
             `WEB session created successfully with ID: ${sessionId}`

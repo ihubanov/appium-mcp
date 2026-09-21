@@ -42,6 +42,7 @@ const {
   PLATFORM,
   touchActiveSession,
   reapIdleSessions,
+  dropDisconnectedSession,
 } = await import('../session-store.js');
 
 const { AndroidUiautomator2Driver } =
@@ -534,5 +535,27 @@ describe('reapIdleSessions', () => {
     expect(res.reaped).toBe(0);
     expect(del).not.toHaveBeenCalled();
     expect(listSessions().map((s) => s.sessionId)).toContain('s-fresh');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dropDisconnectedSession — browser-closed auto-cleanup
+// ---------------------------------------------------------------------------
+describe('dropDisconnectedSession', () => {
+  test('removes the session WITHOUT calling driver.deleteSession (browser is gone)', async () => {
+    const del = jest.fn(async () => {});
+    setSession(makeMockDriver(del), 'pw-gone');
+    expect(listSessions().map((s) => s.sessionId)).toContain('pw-gone');
+
+    const dropped = dropDisconnectedSession('pw-gone', 'attached browser closed');
+
+    expect(dropped).toBe(true);
+    expect(del).not.toHaveBeenCalled(); // must not talk to a dead browser
+    expect(listSessions()).toHaveLength(0);
+    expect(getDriver('pw-gone')).toBeNull();
+  });
+
+  test('returns false for an unknown session id', () => {
+    expect(dropDisconnectedSession('pw-nope')).toBe(false);
   });
 });

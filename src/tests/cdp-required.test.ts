@@ -31,6 +31,7 @@ await jest.unstable_mockModule('../session-store', () => ({
   setSession: jest.fn(),
   listSessions: () => [],
   getDriver: () => null,
+  dropDisconnectedSession: jest.fn(),
 }));
 
 await jest.unstable_mockModule('../playwright-adapter', () => ({

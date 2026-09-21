@@ -26,6 +26,14 @@ export class PlaywrightDriver {
   private _page: Page;
   private readonly elements = new Map<string, ElementHandle>();
   /**
+   * Stable per-tab ids. Playwright exposes no public stable Page id, and tab
+   * *indices* shift whenever a tab opens or closes — unusable when several
+   * agents address tabs concurrently. We assign our own id lazily, keyed by
+   * the Page object (stable for the page's lifetime), so a tab can be named
+   * and driven directly without depending on the single "active page" pointer.
+   */
+  private readonly pageIds = new WeakMap<Page, string>();
+  /**
    * True when this driver is attached (over CDP) to a browser the user is
    * also using. In that mode the context is the user's OWN default context
    * and its pages are the user's real tabs — teardown must not close them.
@@ -51,6 +59,41 @@ export class PlaywrightDriver {
   /** Switch the active page (tab). */
   setPage(page: Page): void {
     this._page = page;
+  }
+
+  // ── Stable tab addressing ───────────────────────────────────────
+
+  /**
+   * Stable id for a tab, assigned on first sight and stable for the page's
+   * life. Lets tools target a specific background tab directly instead of
+   * mutating the shared active-page pointer — the primitive that makes
+   * concurrent, per-tab driving safe.
+   */
+  getTabId(page: Page): string {
+    let id = this.pageIds.get(page);
+    if (!id) {
+      id = `tab-${randomUUID().slice(0, 8)}`;
+      this.pageIds.set(page, id);
+    }
+    return id;
+  }
+
+  /** Resolve a stable tab id to a live Page in this context, or undefined. */
+  resolvePage(tabId: string): Page | undefined {
+    for (const p of this.context.pages()) {
+      if (this.getTabId(p) === tabId) return p;
+    }
+    return undefined;
+  }
+
+  /** Live tabs with their stable ids, current url, and which is AI-active. */
+  listTabs(): { id: string; url: string; active: boolean }[] {
+    const active = this._page;
+    return this.context.pages().map((p) => ({
+      id: this.getTabId(p),
+      url: p.url(),
+      active: p === active,
+    }));
   }
 
   // ── Element Registry ────────────────────────────────────────────

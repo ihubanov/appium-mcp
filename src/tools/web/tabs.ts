@@ -215,8 +215,9 @@ export function listTabs(server: FastMCP): void {
           pages.map(async (page, index) => {
             const title = await page.title();
             const url = page.url();
+            const id = driver.getTabId(page);
             const isActive = page === currentPage ? ' (active)' : '';
-            return `  ${index}. ${title || '(no title)'} - ${url}${isActive}`;
+            return `  ${index}. [${id}] ${title || '(no title)'} - ${url}${isActive}`;
           })
         );
 
@@ -224,7 +225,10 @@ export function listTabs(server: FastMCP): void {
           content: [
             {
               type: 'text',
-              text: `Open tabs (${pages.length}):\n${tabInfo.join('\n')}`,
+              text:
+                `Open tabs (${pages.length}):\n${tabInfo.join('\n')}\n\n` +
+                `Pass a tab id (e.g. "${driver.getTabId(currentPage)}") as the \`tab\` ` +
+                `argument to playwright_run_script to drive that tab directly, even in the background.`,
             },
           ],
         };
