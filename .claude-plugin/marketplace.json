@@ -1,14 +1,12 @@
 {
-  "name": "appium-mcp",
-  "owner": {
-    "name": "ihubanov"
-  },
+  "name": "squire",
+  "owner": { "name": "ihubanov" },
   "plugins": [
     {
-      "name": "appium-web-driving",
+      "name": "squire",
       "source": "./plugin",
-      "description": "Appium/Playwright web + mobile automation, bundled: the appium-mcp server (stdio, per session), the web-driving skill, the browser-driver subagent, and a browser-close cleanup hook.",
-      "version": "0.2.0"
+      "description": "Squire — desktop/browser automation that drives a real browser like a human, alongside you. Web-driving skill, browser-driver subagent, and browser-close cleanup hook. Pairs with the squire MCP server (mcp__squire__*). Not affiliated with Appium.",
+      "version": "0.3.0"
     }
   ]
 }

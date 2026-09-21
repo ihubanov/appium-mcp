@@ -1,11 +1,11 @@
 ---
 name: web-driving
-description: Drive a web page through the appium-mcp Playwright tools the right way — how to run multi-step flows (login, forms, open-menu-then-click) as one human-like unit, survive navigations, reach hidden modals, and respect the user's own tabs in CDP-attach mode. Use whenever a task involves browsing, filling forms, logging in, scraping, or clicking through a site with the appium-mcp `playwright_*` / `appium_*` web tools.
+description: Drive a web page through the Squire Playwright tools the right way — how to run multi-step flows (login, forms, open-menu-then-click) as one human-like unit, survive navigations, reach hidden modals, and respect the user's own tabs in CDP-attach mode. Use whenever a task involves browsing, filling forms, logging in, scraping, or clicking through a site with the Squire `playwright_*` / `appium_*` web tools.
 ---
 
-# Driving a web page with appium-mcp
+# Driving a web page with Squire
 
-The appium-mcp web tools drive a **real** browser (real JS, cookies, redirects, captchas). Prefer `playwright_run_script` for any flow that is more than one action; fall back to the single-action tools only for genuinely one-off interactions.
+The Squire web tools drive a **real** browser (real JS, cookies, redirects, captchas). Prefer `playwright_run_script` for any flow that is more than one action; fall back to the single-action tools only for genuinely one-off interactions.
 
 ## Pick the right tool
 
