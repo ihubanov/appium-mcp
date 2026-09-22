@@ -13,6 +13,34 @@ The Squire web tools drive a **real** browser (real JS, cookies, redirects, capt
 - **Single-action tools** (`appium_click`, `appium_set_value`, `playwright_type`, `playwright_navigate`, …) — one-off interactions, or when you must inspect the result of each step before deciding the next.
 - **`playwright_evaluate`** — read structured data out of the page, call a page JS API, or `fetch()` a same-origin endpoint. Not for multi-step interaction.
 
+## Plan for parallel tabs — prefer it when the task fans out
+
+**Before you start a multi-unit task, decide: is this N *independent* units?** Scraping 6 listings, checking 10 URLs, pulling the same field from 4 sites, filling one form on 3 portals — the units don't depend on each other's results and don't share one sequential login/state flow. If so, **do them in parallel, one tab per unit** — it's faster and it's what Squire is built for (tabs are addressed by stable id, so several can be driven at once without interfering).
+
+Two ways to fan out, cheapest first:
+
+1. **Concurrent `run_script` calls (no subagents).** Open a tab per unit with `playwright_new_tab`, note each returned tab id, then issue multiple `playwright_run_script({ tab: "<id>", steps })` calls **in a single turn** — they run concurrently, each on its own tab (targeting the stable id, never the shared active pointer). Best for a handful of short, similar scripts where you want all the results back together.
+
+2. **One `browser-driver` subagent per tab.** Spawn them in one message so they run concurrently, giving each a specific tab id and its unit. Best when each unit is long, dumps a lot of page text, or needs its own reasoning — the isolation keeps the main context clean.
+
+**Guardrails (it's one shared browser):**
+- **Cap concurrency at ~3–5 tabs.** Too many parallel tabs thrash CPU and trip rate-limits / bot-detection. For 20 units, batch in waves of ~4.
+- **One worker per tab.** Never point two `run_script` calls or two subagents at the same tab id — they clobber each other.
+- **Address tabs by stable id** from `playwright_list_tabs`, never by index (indices shift as tabs open/close).
+- **Never the user's focused/protected tab** — open your own with `playwright_new_tab`.
+- **Close the tabs you opened** when done.
+
+**Keep it sequential when there's a real dependency:** a login whose session the later steps need, a wizard where step N needs N−1, or when one result decides the next action. Parallel is for genuinely independent units only — don't fan out a single stateful flow.
+
+Shape:
+```
+plan  → split into independent units u1..uN (cap a wave at ~4)
+open  → playwright_new_tab per unit; keep each tab id
+fan   → run_script({tab: id_i, steps_i}) for all i in one turn   (or one subagent per tab)
+collect → gather per-tab results; resume/retry only the tabs that failed
+clean → close the tabs you opened
+```
+
 ## The four things that bite you (and how run_script handles them)
 
 1. **A submit/click navigates and destroys the JS context.** A raw `playwright_evaluate` that submits a form dies with *"Execution context was destroyed, most likely because of a navigation"* and everything after it is lost. `playwright_run_script` **absorbs the navigation** — the step is marked `navigated: true` and the remaining steps run on the settled new page. Put the post-login check as a later step in the same script; it will run on the far side.
