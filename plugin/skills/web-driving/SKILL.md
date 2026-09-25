@@ -27,7 +27,7 @@ Two ways to fan out, cheapest first:
 - **Cap concurrency at ~3–5 tabs.** Too many parallel tabs thrash CPU and trip rate-limits / bot-detection. For 20 units, batch in waves of ~4.
 - **One worker per tab.** Never point two `run_script` calls or two subagents at the same tab id — they clobber each other.
 - **Address tabs by stable id** from `playwright_list_tabs`, never by index (indices shift as tabs open/close).
-- **Never the user's focused/protected tab** — open your own with `playwright_new_tab`.
+- **Don't hijack a tab the user is using** for self-initiated work — open your own with `playwright_new_tab`. (Exception: a tab the user explicitly handed you — use that one.) The protected TUI tab is always off-limits.
 - **Close the tabs you opened** when done.
 
 **Keep it sequential when there's a real dependency:** a login whose session the later steps need, a wizard where step N needs N−1, or when one result decides the next action. Parallel is for genuinely independent units only — don't fan out a single stateful flow.
@@ -49,7 +49,11 @@ clean → close the tabs you opened
 
 3. **A step fails mid-flow.** With `stopOnError` (default true) the run stops at the first failing step and returns a `continuationId` plus the per-step results. Inspect what failed, then call `playwright_run_script` again with `resume: "<continuationId>"` to pick up from the next step — after you fix the selector, dismiss a blocker, or navigate. Don't restart the whole flow.
 
-4. **CDP-attach mode shares the user's real browser.** When the session attached to the user's own Chromium (the create_session result says so), the tabs are the *user's* real tabs. **Open your own tab first** with `playwright_new_tab` before navigating or interacting, or you'll be refused (protected-tab / user-focused guards) — or worse, yank the user off their page. The guards also apply inside `run_script`: every mutating step is checked against the live tab.
+4. **CDP-attach mode shares the user's real browser** — the open tabs are the *user's* real tabs. There are two cases, and getting them backwards is a common failure:
+   - **The user points you at a tab** ("look at the tab I just opened", "use this tab", "check that one", "the page I'm on"): **do NOT open a new tab.** Call `playwright_list_tabs`, pick the tab they mean — the newest one, or the one whose URL/title matches what they described, skipping the protected TUI tab — `playwright_switch_tab` to it, and work there. Reading it (screenshot, page source, get_url) never needs a new tab; switching and reading are always allowed.
+   - **Self-initiated work** (they gave a goal or a URL, not a specific tab): open your **own** tab first with `playwright_new_tab`, so you don't hijack a page the user is using.
+
+   When in doubt about which existing tab is "theirs," `playwright_list_tabs` and reason from the URLs/titles — never default to opening a new tab when the user clearly meant an existing one. Only the protected TUI tab is truly off-limits.
 
 ## Step vocabulary for run_script
 

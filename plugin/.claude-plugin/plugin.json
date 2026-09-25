@@ -1,6 +1,6 @@
 {
   "name": "squire",
   "description": "Squire: your second pair of hands in the browser. Bundles the web-driving skill, the browser-driver subagent, and a browser-close cleanup hook for the squire MCP server (tools exposed as mcp__squire__*). Not affiliated with Appium.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": { "name": "ihubanov" }
 }
