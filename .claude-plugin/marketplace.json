@@ -5,8 +5,8 @@
     {
       "name": "squire",
       "source": "./plugin",
-      "description": "Squire — desktop/browser automation that drives a real browser like a human, alongside you. Web-driving skill, browser-driver subagent, and browser-close cleanup hook. Pairs with the squire MCP server (mcp__squire__*). Not affiliated with Appium.",
-      "version": "0.4.0"
+      "description": "Squire — desktop/browser automation that drives a real browser like a human, alongside you. Web-driving skill, browser-driver subagent, and browser-close cleanup hook. Pairs with the squire MCP server (mcp__plugin_squire_squire__*). Not affiliated with Appium.",
+      "version": "0.4.1"
     }
   ]
 }

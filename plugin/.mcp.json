@@ -2,11 +2,12 @@
   "mcpServers": {
     "squire": {
       "command": "npx",
-      "args": ["-y", "@sniffski/squire"],
+      "args": ["-y", "@sniffski/squire@1.28.0"],
       "env": {
         "NODE_ENV": "production",
         "APPIUM_MCP_RESPECT_USER_FOCUS": "false",
-        "APPIUM_MCP_CDP_ENDPOINT": "http://localhost:9222"
+        "APPIUM_MCP_CDP_ENDPOINT": "http://localhost:9222",
+        "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1"
       }
     }
   }
