@@ -1,14 +1,14 @@
 {
   "name": "@sniffski/squire",
   "mcpName": "io.github.ihubanov/appium-mcp",
-  "version": "1.27.0",
+  "version": "1.28.0",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/appium/appium-mcp.git"
+    "url": "https://github.com/ihubanov/appium-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/appium/appium-mcp/issues"
+    "url": "https://github.com/ihubanov/appium-mcp/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -37,9 +37,9 @@
     "version": "npm run sync-version",
     "prepack": "npm run build"
   },
-  "author": "",
+  "author": "ihubanov",
   "license": "Apache-2.0",
-  "description": "Intelligent MCP server providing AI assistants with powerful tools and resources for Appium mobile automation",
+  "description": "Squire \u2014 AI-native desktop & browser automation over MCP: drive a real browser like a human (multi-tab, navigation-tolerant scripts, vision grounding). Built on the appium-mcp foundation; retains Appium mobile tools. Not affiliated with Appium.",
   "dependencies": {
     "@appium/support": "^7.0.2",
     "@langchain/classic": "^1.0.10",
@@ -109,5 +109,16 @@
   },
   "engines": {
     "node": ">=18"
-  }
+  },
+  "homepage": "https://github.com/ihubanov/appium-mcp#readme",
+  "keywords": [
+    "mcp",
+    "squire",
+    "browser-automation",
+    "playwright",
+    "web-automation",
+    "ai-agent",
+    "cdp",
+    "appium"
+  ]
 }
