@@ -1,5 +1,5 @@
 {
-  "name": "@ihubanov/appium-mcp",
+  "name": "@ihubanov/squire",
   "mcpName": "io.github.ihubanov/appium-mcp",
   "version": "1.27.0",
   "type": "module",
@@ -13,7 +13,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "appium-mcp": "dist/index.js"
+    "squire": "dist/index.js"
   },
   "scripts": {
     "build": "rimraf dist tsconfig.tsbuildinfo && tsc -b && node scripts/postbuild.mjs",
@@ -34,7 +34,8 @@
     "index-docs": "node dist/scripts/simple-index-documentation.js",
     "query-docs": "node dist/scripts/simple-query-documentation.js",
     "sync-version": "node scripts/sync-version.mjs",
-    "version": "npm run sync-version"
+    "version": "npm run sync-version",
+    "prepack": "npm run build"
   },
   "author": "",
   "license": "Apache-2.0",
@@ -105,5 +106,8 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
