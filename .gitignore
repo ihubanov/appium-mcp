@@ -20,3 +20,4 @@ tsconfig.tsbuildinfo
 .vision-model/
 .venv-vision/
 .venv-hunch/
+!/plugin/.mcp.json

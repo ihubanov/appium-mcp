@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "squire": {
+      "command": "npx",
+      "args": ["-y", "@sniffski/squire"],
+      "env": {
+        "NODE_ENV": "production",
+        "APPIUM_MCP_RESPECT_USER_FOCUS": "false",
+        "APPIUM_MCP_CDP_ENDPOINT": "http://localhost:9222"
+      }
+    }
+  }
+}
