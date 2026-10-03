@@ -5,8 +5,8 @@ import { z } from 'zod';
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { URL } from 'node:url';
-import { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
-import { XCUITestDriver } from 'appium-xcuitest-driver';
+import type { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
+import type { XCUITestDriver } from 'appium-xcuitest-driver';
 import { setSession, listSessions, dropDisconnectedSession } from '../../session-store.js';
 import {
   getSelectedDevice,
@@ -210,13 +210,18 @@ export function getPortFromUrl(url: URL): number {
 /**
  * Create the appropriate driver instance for the given platform
  */
-function createDriverForPlatform(platform: 'android' | 'ios'): any {
+async function createDriverForPlatform(platform: 'android' | 'ios'): Promise<any> {
+  // Lazy-import the heavy Appium mobile drivers only when a mobile session is
+  // actually created — importing them eagerly cost ~2-3s at every server start
+  // (they pull the whole Appium stack), pointless for the browser-first path.
   if (platform === 'android') {
+    const { AndroidUiautomator2Driver } = await import('appium-uiautomator2-driver');
     const driver = new AndroidUiautomator2Driver({} as any);
     driver.relaxedSecurityEnabled = true;
     return driver;
   }
   if (platform === 'ios') {
+    const { XCUITestDriver } = await import('appium-xcuitest-driver');
     const driver = new XCUITestDriver({} as any);
     driver.relaxedSecurityEnabled = true;
     return driver;
@@ -710,7 +715,7 @@ export default function createSession(server: any): void {
           sessionId = client.sessionId;
           setSession(client, client.sessionId, finalCapabilities);
         } else {
-          const driver = createDriverForPlatform(platform);
+          const driver = await createDriverForPlatform(platform);
           log.info(`Sending session with ${driver.constructor.name}`);
           sessionId = await createDriverSession(driver, finalCapabilities);
           setSession(driver, sessionId, finalCapabilities);

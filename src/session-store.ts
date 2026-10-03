@@ -1,5 +1,5 @@
-import { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
-import { XCUITestDriver } from 'appium-xcuitest-driver';
+import type { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
+import type { XCUITestDriver } from 'appium-xcuitest-driver';
 import type { Client } from 'webdriver';
 import { PlaywrightDriver } from './playwright-adapter.js';
 import log from './logger.js';
@@ -95,11 +95,27 @@ export function isPlaywrightDriverSession(
   return driver instanceof PlaywrightDriver;
 }
 
+/**
+ * Detect the Appium mobile driver type WITHOUT importing the driver classes.
+ * Importing `appium-uiautomator2-driver` / `appium-xcuitest-driver` at module
+ * load costs ~2-3s (they pull the whole Appium stack) and is wasted on the
+ * browser-first path. The class name is stable for these packages, so a
+ * constructor-name check is an equivalent, zero-import `instanceof`.
+ */
+function driverCtorName(driver: unknown): string {
+  try {
+    return (driver as { constructor?: { name?: string } } | null)?.constructor?.name ?? '';
+  } catch {
+    return '';
+  }
+}
+
 export function isRemoteDriverSession(driver: NullableDriverInstance): boolean {
   if (driver) {
+    const n = driverCtorName(driver);
     return (
-      !(driver instanceof AndroidUiautomator2Driver) &&
-      !(driver instanceof XCUITestDriver) &&
+      n !== 'AndroidUiautomator2Driver' &&
+      n !== 'XCUITestDriver' &&
       !(driver instanceof PlaywrightDriver)
     );
   }
@@ -121,7 +137,7 @@ export function isRemoteDriverSession(driver: NullableDriverInstance): boolean {
 export function isAndroidUiautomator2DriverSession(
   driver: NullableDriverInstance
 ): driver is AndroidUiautomator2Driver {
-  return driver instanceof AndroidUiautomator2Driver;
+  return driverCtorName(driver) === 'AndroidUiautomator2Driver';
 }
 
 /**
@@ -138,7 +154,7 @@ export function isAndroidUiautomator2DriverSession(
 export function isXCUITestDriverSession(
   driver: NullableDriverInstance
 ): driver is XCUITestDriver {
-  return driver instanceof XCUITestDriver;
+  return driverCtorName(driver) === 'XCUITestDriver';
 }
 
 export function setSession(
@@ -463,10 +479,11 @@ export const getPlatformName = (driver: any): string => {
   if (driver instanceof PlaywrightDriver) {
     return PLATFORM.web;
   }
-  if (driver instanceof AndroidUiautomator2Driver) {
+  const n = driverCtorName(driver);
+  if (n === 'AndroidUiautomator2Driver') {
     return PLATFORM.android;
   }
-  if (driver instanceof XCUITestDriver) {
+  if (n === 'XCUITestDriver') {
     return PLATFORM.ios;
   }
 
