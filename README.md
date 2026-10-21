@@ -10,6 +10,7 @@
 ## What makes it different
 
 - **`run_script` — drive a page like a human in one call.** A sequence of steps (fill → click → wait → verify) that **survives navigations** (a form submit no longer aborts the rest), **reveals hidden/shadow-DOM elements** when a plain click can't reach them, and **stops-and-resumes** on failure instead of blindly barreling on.
+- **Presenter — show a person how, on their own screen.** Say "show me how to…" and `playwright_present` walks them through the site: the page dims, a spotlight glides to each element, an arrow bobs toward it, and a caption explains the step. In **guided** mode (default) the person does each step and the tour follows them across clicks, inputs and page loads. **Demo** mode does the steps itself at human pace, with a visible cursor, and never types passwords or card numbers.
 - **Real multi-tab.** Stable tab ids let you drive several background tabs **concurrently** without them clobbering each other — and the orchestrator plans parallel work when a task fans out.
 - **Attaches to your real Chrome** over CDP, so cookies, logins, redirects and captchas behave exactly as they do for you — with guards so the AI never hijacks the tab you're using.
 - **Vision grounding** for canvas/WebGL/custom UIs where DOM selectors fail: OCR text labels plus an optional ONNX icon detector.
@@ -22,7 +23,7 @@
 /plugin marketplace add ihubanov/appium-mcp
 /plugin install squire@squire
 ```
-This installs the web-driving skill, the `browser-driver` subagent, the cleanup hook, **and** the MCP server (via `npx @sniffski/squire`). Restart the session afterwards.
+This installs the web-driving and presenting skills, the `browser-driver` and `presenter` subagents, the cleanup hook, **and** the MCP server (via `npx @sniffski/squire`). Restart the session afterwards.
 
 ### As a plain MCP server
 ```bash

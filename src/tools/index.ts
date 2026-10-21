@@ -64,6 +64,7 @@ import navigate from './web/navigate.js';
 import { goBack, goForward, reload } from './web/browser-navigation.js';
 import evaluate from './web/evaluate.js';
 import runScriptTool from './web/run-script.js';
+import present from './web/present.js';
 import selectOption from './web/select-option.js';
 import hover from './web/hover.js';
 import { newTab, switchTab, listTabs, closeTab } from './web/tabs.js';
@@ -244,6 +245,7 @@ export default function registerTools(server: FastMCP): void {
   reload(server);
   evaluate(server);
   runScriptTool(server);
+  present(server);
   selectOption(server);
   hover(server);
   newTab(server);
