@@ -87,6 +87,10 @@ type WaitOutcome =
   | { kind: 'closed' };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Demo mode: how long each step stays on screen before Squire performs it. */
+const DEMO_HOLD_MS = 5000;
+/** The cursor glides over in the last part of the hold. */
+const CURSOR_GLIDE_MS = 1200;
 
 /** Plain CSS the overlay can re-query itself after a re-render. */
 function cssOnly(selector?: string): string | null {
@@ -381,6 +385,7 @@ export class Tour {
         i > 0 &&
         (this.stepUrls[i - 1] === this.page.url() || this.navigated.has(i - 1)),
       mode: guidedHere ? 'guided' : 'demo',
+      holdMs: guidedHere ? 0 : this.holdMs(step),
     };
     const hasTarget = Boolean(step.selector || step.visual);
     // Caption first; the spotlight follows once the element is found.
@@ -498,6 +503,10 @@ export class Tour {
     return null;
   }
 
+  private holdMs(step: PresentStep): number {
+    return step.readMs ?? DEMO_HOLD_MS;
+  }
+
   /** Demo mode: narrate, glide the cursor over, then do the step. */
   private async demoStep(i: number, step: PresentStep): Promise<boolean> {
     const action = step.action ?? 'none';
@@ -515,10 +524,10 @@ export class Tour {
       }
     }
 
-    const readMs =
-      step.readMs ??
-      Math.min(6000, Math.max(1500, 1200 + step.text.length * 35));
-    await sleep(readMs / 2);
+    // Hold the step on screen (spotlight, caption, countdown bar) so the
+    // person can follow; the cursor glides over in the last second.
+    const holdUntil = Date.now() + this.holdMs(step);
+    await sleep(holdUntil - Date.now() - CURSOR_GLIDE_MS);
     const pt = await this.targetPoint();
     if (pt) {
       await this.page
@@ -528,7 +537,7 @@ export class Tour {
         )
         .catch(() => {});
     }
-    await sleep(readMs / 2);
+    await sleep(holdUntil - Date.now());
     if (await this.userStopped()) return true;
 
     if (action === 'none') {

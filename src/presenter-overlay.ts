@@ -122,6 +122,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 .compact h3 { margin: 2px 0 3px; font-size: 14px; }
 .compact p { margin: 0 0 8px; }
 .compact .hint, .compact .bar { display: none; }
+.compact .bubble.demo .bar { display: block; margin: 0 0 8px; }
 .compact button { padding: 5px 10px; border-radius: 8px; font-size: 12px; }
 @media (prefers-color-scheme: dark) {
   .bubble { background: #1d2030; color: #eceef6; }
@@ -513,7 +514,17 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     text.textContent = o.text || '';
     hint.textContent =
       o.mode === 'demo' ? '' : o.hint || HINTS[state.advance] || '';
-    barFill.style.width = `${Math.round(((o.index + 1) / Math.max(1, o.total)) * 100)}%`;
+    if (o.mode === 'demo' && o.holdMs > 0) {
+      // Demo: the bar counts down to the moment the step is performed.
+      barFill.style.transition = 'none';
+      barFill.style.width = '0%';
+      void barFill.offsetWidth;
+      barFill.style.transition = `width ${o.holdMs}ms linear`;
+      barFill.style.width = '100%';
+    } else {
+      barFill.style.transition = '';
+      barFill.style.width = `${Math.round(((o.index + 1) / Math.max(1, o.total)) * 100)}%`;
+    }
     next.textContent = o.isLast ? 'Done' : 'Next';
     skip.textContent = o.mode === 'demo' ? 'Stop' : 'Skip tour';
     back.classList.toggle('hidden', o.mode === 'demo' || !o.showBack);

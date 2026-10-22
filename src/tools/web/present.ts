@@ -61,7 +61,7 @@ const stepSchema = z.object({
     .number()
     .optional()
     .describe(
-      'Demo: ms to let the caption be read before acting (default scales with text length).'
+      'Demo: ms to hold the step on screen before Squire performs it (default 5000).'
     ),
 });
 

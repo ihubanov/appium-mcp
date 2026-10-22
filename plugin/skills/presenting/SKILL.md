@@ -40,7 +40,7 @@ When in doubt, use **guided**. People learn by doing it themselves.
 }
 ```
 
-For demo mode, add `value` to `fill`/`type`/`select` steps (what Squire types or picks) and optionally `readMs` to slow down a step with a long caption.
+For demo mode, add `value` to `fill`/`type`/`select` steps (what Squire types or picks) and optionally `readMs` (default 5000) to hold a step longer or shorter before Squire does it.
 
 When the DOM has nothing to point at (canvas apps, PDF viewers), use `visual` instead of `selector` — a visible label ("Sign in") or a position hint ("close X top right"), grounded via OCR/vision like `run_script`'s vision rung.
 
