@@ -162,7 +162,7 @@ export async function handleLongPress(driver: DriverInstance, args: GestureArgs)
   }
 }
 
-function w3cTapAt(x: number, y: number) {
+export function w3cTapAt(x: number, y: number) {
   return [
     {
       type: 'pointer',

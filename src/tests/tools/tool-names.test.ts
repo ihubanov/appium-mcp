@@ -81,6 +81,7 @@ const EXPECTED_TOOL_NAMES = [
   'generate_locators',
   'appium_generate_tests',
   // appium_ai is intentionally absent — gated by AI_VISION_ENABLED env var
+  // appium_walkthrough is intentionally absent — gated by APPIUM_MCP_WALKTHROUGH_ENABLED
 ];
 
 describe('registered MCP tool names', () => {
@@ -95,5 +96,25 @@ describe('registered MCP tool names', () => {
     registerTools(mockServer as any);
 
     expect(names.sort()).toEqual([...EXPECTED_TOOL_NAMES].sort());
+  });
+
+  test('registers appium_walkthrough only when APPIUM_MCP_WALKTHROUGH_ENABLED is set', () => {
+    const original = process.env.APPIUM_MCP_WALKTHROUGH_ENABLED;
+    process.env.APPIUM_MCP_WALKTHROUGH_ENABLED = 'true';
+    try {
+      const names: string[] = [];
+      registerTools({
+        addTool: ({name}: {name: string}) => {
+          names.push(name);
+        },
+      } as any);
+      expect(names).toContain('appium_walkthrough');
+    } finally {
+      if (original === undefined) {
+        delete process.env.APPIUM_MCP_WALKTHROUGH_ENABLED;
+      } else {
+        process.env.APPIUM_MCP_WALKTHROUGH_ENABLED = original;
+      }
+    }
   });
 });

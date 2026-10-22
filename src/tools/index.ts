@@ -50,6 +50,7 @@ import selectDevice from './session/select-device.js';
 import session from './session/session.js';
 import generateTest from './test-generation/generate-tests.js';
 import generateLocators from './test-generation/locators.js';
+import walkthrough, {isWalkthroughEnabled} from './walkthrough/walkthrough.js';
 
 type RegisteredTool = Parameters<FastMCP['addTool']>[0];
 
@@ -146,6 +147,12 @@ export default function registerTools(server: FastMCP): void {
   // Test Generation
   generateLocators(server);
   generateTest(server);
+
+  // Walkthroughs — opt-in: they serve a local viewer page.
+  if (isWalkthroughEnabled()) {
+    walkthrough(server);
+    log.info('appium_walkthrough tool registered (APPIUM_MCP_WALKTHROUGH_ENABLED=true)');
+  }
 
   // AI (vision-based fallback) — gated; only registered when explicitly enabled.
   assertAIConfig();

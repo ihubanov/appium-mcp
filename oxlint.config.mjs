@@ -6,4 +6,11 @@ export default defineConfig({
   rules: {
     'no-console': 'off',
   },
+  overrides: [
+    {
+      // Serialized into the walkthrough viewer page and run in the browser.
+      files: ['src/walkthrough/overlay.ts'],
+      env: {browser: true},
+    },
+  ],
 });
