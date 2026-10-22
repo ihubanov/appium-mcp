@@ -96,6 +96,22 @@ function cssOnly(selector?: string): string | null {
   return selector;
 }
 
+/** Password, payment and one-time-code fields are never typed into. */
+async function isSensitive(handle: ElementHandle<Element>): Promise<boolean> {
+  return handle
+    .evaluate((e: any) => {
+      const t = String(e.type ?? '').toLowerCase();
+      const ac = String(e.autocomplete ?? '').toLowerCase();
+      return (
+        t === 'password' ||
+        ac.includes('password') ||
+        ac.startsWith('cc-') ||
+        ac === 'one-time-code'
+      );
+    })
+    .catch(() => false);
+}
+
 function defaultAdvance(step: PresentStep): Advance {
   if (step.advance) return step.advance;
   switch (step.action) {
@@ -122,6 +138,10 @@ export class Tour {
   private readonly stepUrls: string[] = [];
   /** Steps that must wait for the person even in demo mode (e.g. passwords). */
   private readonly handedToUser = new Set<number>();
+  /** Steps whose completion navigated, so Back goes back in the browser too. */
+  private readonly navigated = new Set<number>();
+  /** Target's form value when the step was shown, to tell whether the person already filled it. */
+  private shownValue: string | null = null;
 
   constructor(
     readonly page: Page,
@@ -176,6 +196,7 @@ export class Tour {
       if (outcome.kind === 'nav') {
         if (advance === 'click' || advance === 'navigation') {
           this.finishStep(i, 'navigation');
+          this.navigated.add(i);
           this.index++;
         } else if (!outcome.alive) {
           this.shownIndex = -1; // new document: re-show this step there
@@ -191,10 +212,22 @@ export class Tour {
       if (this.stopped) break;
       const ev = outcome.events[0]!;
       if (ev.type === 'back') {
-        if (i > 0 && this.stepUrls[i - 1] === this.page.url()) {
+        if (i > 0 && this.navigated.has(i - 1)) {
+          // The previous step moved us here: go back in the browser too.
+          this.navigated.delete(i - 1);
+          await this.page
+            .goBack({ waitUntil: 'domcontentloaded', timeout: 10_000 })
+            .catch(() => {});
+          this.index = i - 1;
+          this.shownIndex = -1;
+        } else if (i > 0 && this.stepUrls[i - 1] === this.page.url()) {
           this.index = i - 1;
         }
         continue;
+      }
+      if (ev.type === 'next') {
+        // Next does the step for the person, unless they already did it.
+        await this.performOnNext(i, step);
       }
       // next / target-click / target-input
       this.finishStep(i, ev.type);
@@ -322,8 +355,10 @@ export class Tour {
 
   private async showStepOnce(i: number): Promise<void> {
     const step = this.steps[i]!;
-    await this.page.evaluate(installPresenter, { accent: this.accent });
-    this.target = await this.resolveTarget(step);
+    await this.page.evaluate(installPresenter, {
+      accent: this.accent,
+      compact: true,
+    });
     this.stepUrls[i] = this.page.url();
     this.seqSeen = await this.page
       .evaluate(() => (window as any).__squirePresenter?.seq ?? 0)
@@ -331,8 +366,6 @@ export class Tour {
 
     const guidedHere = this.mode === 'guided' || this.handedToUser.has(i);
     const opts = {
-      selector: cssOnly(step.selector),
-      rect: this.target.rect,
       title: step.title ?? '',
       text: step.text,
       hint:
@@ -343,14 +376,36 @@ export class Tour {
       index: i,
       total: this.steps.length,
       isLast: i === this.steps.length - 1,
-      showBack: guidedHere && i > 0 && this.stepUrls[i - 1] === this.page.url(),
+      showBack:
+        guidedHere &&
+        i > 0 &&
+        (this.stepUrls[i - 1] === this.page.url() || this.navigated.has(i - 1)),
       mode: guidedHere ? 'guided' : 'demo',
     };
-    await this.page.evaluate(
-      ([el, o]) =>
-        (window as any).__squirePresenter.show({ ...(o as any), el }),
-      [this.target.handle, opts] as const
-    );
+    const hasTarget = Boolean(step.selector || step.visual);
+    // Caption first; the spotlight follows once the element is found.
+    await this.page.evaluate((o) => (window as any).__squirePresenter.show(o), {
+      ...opts,
+      pending: hasTarget,
+    });
+    if (hasTarget) {
+      this.target = await this.resolveTarget(step);
+      await this.page.evaluate(
+        ([el, o]) =>
+          (window as any).__squirePresenter.setTarget({ ...(o as any), el }),
+        [
+          this.target.handle,
+          { selector: cssOnly(step.selector), rect: this.target.rect },
+        ] as const
+      );
+    } else {
+      this.target = { handle: null, rect: null };
+    }
+    this.shownValue = this.target.handle
+      ? await this.target.handle
+          .evaluate((e: any) => ('value' in e ? String(e.value) : null))
+          .catch(() => null)
+      : null;
 
     const kind: PresentStepResult['target'] = this.target.handle
       ? 'element'
@@ -373,6 +428,63 @@ export class Tour {
     this.shownIndex = i;
   }
 
+  /**
+   * Guided Next on a step with an action: do it for the person (same path as
+   * demo mode), unless they already did it or it's a sensitive field.
+   */
+  private async performOnNext(i: number, step: PresentStep): Promise<void> {
+    const action = step.action ?? 'none';
+    if (action === 'none') return;
+    const handle = this.target.handle;
+    if (this.page.isClosed() || this.page.url() !== this.stepUrls[i]) return;
+    const touched = await this.page
+      .evaluate(() => !!(window as any).__squirePresenter?.touched)
+      .catch(() => false);
+    if (touched) return;
+    if (handle) {
+      if (action === 'fill' || action === 'type' || action === 'select') {
+        const now = await handle
+          .evaluate((e: any) => ('value' in e ? String(e.value) : null))
+          .catch(() => null);
+        if (now !== this.shownValue) return;
+      }
+      if (
+        (action === 'fill' || action === 'type') &&
+        (await isSensitive(handle))
+      ) {
+        const r = this.results.get(i);
+        if (r) r.detail = 'sensitive field — left for the person, not typed';
+        return;
+      }
+    }
+    const pt = await this.targetPoint();
+    if (!handle && !pt) return;
+    if (pt) {
+      await this.page
+        .evaluate(
+          ([x, y]) => (window as any).__squirePresenter?.moveCursor(x, y),
+          [pt.x, pt.y] as const
+        )
+        .catch(() => {});
+    }
+    const before = this.page.url();
+    try {
+      await this.performAction(action, step, handle, pt);
+      // Commit the edit now, so its change event can't count for the next step.
+      await handle?.evaluate((e: any) => e.blur?.()).catch(() => {});
+      const r = this.results.get(i);
+      if (r) r.detail = 'Squire did this step when Next was pressed';
+    } catch (err: any) {
+      const r = this.results.get(i);
+      if (r)
+        r.detail = `Next: couldn't ${action}: ${String(err?.message ?? err).split('\n')[0]}`;
+      return;
+    }
+    if (!this.page.isClosed() && this.page.url() !== before) {
+      this.navigated.add(i);
+    }
+  }
+
   /** Viewport centre of the current target, if it has one. */
   private async targetPoint(): Promise<{ x: number; y: number } | null> {
     if (this.target.handle) {
@@ -392,19 +504,7 @@ export class Tour {
     const handle = this.target.handle;
 
     if ((action === 'fill' || action === 'type') && handle) {
-      const sensitive = await handle
-        .evaluate((e: any) => {
-          const t = String(e.type ?? '').toLowerCase();
-          const ac = String(e.autocomplete ?? '').toLowerCase();
-          return (
-            t === 'password' ||
-            ac.includes('password') ||
-            ac.startsWith('cc-') ||
-            ac === 'one-time-code'
-          );
-        })
-        .catch(() => false);
-      if (sensitive) {
+      if (await isSensitive(handle)) {
         this.handedToUser.add(i);
         this.shownIndex = -1;
         const r = this.results.get(i);
@@ -445,62 +545,10 @@ export class Tour {
     }
 
     try {
-      if (
-        pt &&
-        (action === 'click' || action === 'fill' || action === 'type')
-      ) {
-        await this.page
-          .evaluate(
-            ([x, y]) => (window as any).__squirePresenter?.ripple(x, y),
-            [pt.x, pt.y] as const
-          )
-          .catch(() => {});
-      }
-      const value = step.value ?? '';
-      if (handle) {
-        switch (action) {
-          case 'click':
-            await handle.click({ timeout: 5000 }).catch(async () => {
-              // Fall back to an in-page click if something intercepts it.
-              await handle.evaluate((e: any) => e.click());
-            });
-            break;
-          case 'fill':
-            await handle.fill(value, { timeout: 5000 });
-            break;
-          case 'type':
-            await handle.focus();
-            await this.page.keyboard.type(value, { delay: 55 });
-            break;
-          case 'hover':
-            await handle.hover({ timeout: 5000 });
-            break;
-          case 'select':
-            await handle.selectOption(value, { timeout: 5000 });
-            break;
-          case 'press':
-            await handle.press(step.key ?? 'Enter', { timeout: 5000 });
-            break;
-        }
-      } else if (pt) {
-        // Vision-grounded target: act on the pixels.
-        if (action === 'hover') {
-          await this.page.mouse.move(pt.x, pt.y);
-        } else {
-          await this.page.mouse.click(pt.x, pt.y);
-          if (action === 'fill' || action === 'type') {
-            await this.page.keyboard.type(value, { delay: 55 });
-          } else if (action === 'press') {
-            await this.page.keyboard.press(step.key ?? 'Enter');
-          }
-        }
-      }
-      if (action === 'click' || action === 'press') {
-        // Let a navigation the action triggered settle before the next step.
-        await sleep(300);
-        await this.page
-          .waitForLoadState('domcontentloaded', { timeout: 10_000 })
-          .catch(() => {});
+      const before = this.page.url();
+      await this.performAction(action, step, handle, pt);
+      if (!this.page.isClosed() && this.page.url() !== before) {
+        this.navigated.add(i);
       }
       this.finishStep(i, 'squire');
       return true;
@@ -511,6 +559,69 @@ export class Tour {
         r.detail = String(err?.message ?? err).split('\n')[0];
       }
       return false;
+    }
+  }
+
+  /** Do a step's action on the page, with a ripple where it lands. */
+  private async performAction(
+    action: PresentAction,
+    step: PresentStep,
+    handle: ElementHandle<Element> | null,
+    pt: { x: number; y: number } | null
+  ): Promise<void> {
+    if (pt && (action === 'click' || action === 'fill' || action === 'type')) {
+      await this.page
+        .evaluate(([x, y]) => (window as any).__squirePresenter?.ripple(x, y), [
+          pt.x,
+          pt.y,
+        ] as const)
+        .catch(() => {});
+    }
+    const value = step.value ?? '';
+    if (handle) {
+      switch (action) {
+        case 'click':
+          await handle.click({ timeout: 5000 }).catch(async () => {
+            // Fall back to an in-page click if something intercepts it.
+            await handle.evaluate((e: any) => e.click());
+          });
+          break;
+        case 'fill':
+          await handle.fill(value, { timeout: 5000 });
+          break;
+        case 'type':
+          await handle.focus();
+          await this.page.keyboard.type(value, { delay: 55 });
+          break;
+        case 'hover':
+          await handle.hover({ timeout: 5000 });
+          break;
+        case 'select':
+          await handle.selectOption(value, { timeout: 5000 });
+          break;
+        case 'press':
+          await handle.press(step.key ?? 'Enter', { timeout: 5000 });
+          break;
+      }
+    } else if (pt) {
+      // Vision-grounded target: act on the pixels.
+      if (action === 'hover') {
+        await this.page.mouse.move(pt.x, pt.y);
+      } else {
+        await this.page.mouse.click(pt.x, pt.y);
+        if (action === 'fill' || action === 'type') {
+          await this.page.keyboard.type(value, { delay: 55 });
+        } else if (action === 'press') {
+          await this.page.keyboard.press(step.key ?? 'Enter');
+        }
+      }
+    }
+    if (action === 'click' || action === 'press') {
+      // Let a navigation the action triggered settle before the next step.
+      await sleep(300);
+      await this.page
+        .waitForLoadState('domcontentloaded', { timeout: 10_000 })
+        .catch(() => {});
     }
   }
 

@@ -20,7 +20,10 @@
  * It talks back to the Node side through an event queue on
  * `window.__squirePresenter` (`seq` + `events`), which the presenter polls.
  */
-export function installPresenter(cfg?: { accent?: string }): boolean {
+export function installPresenter(cfg?: {
+  accent?: string;
+  compact?: boolean;
+}): boolean {
   const w = window as any;
   const existing = w.__squirePresenter;
   if (existing && existing.host && existing.host.isConnected) {
@@ -112,6 +115,14 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   pointer-events: none; animation: toast 1.6s var(--ease) forwards; }
 @keyframes toast { 0% { opacity: 0; scale: .8; } 15% { opacity: 1; scale: 1; }
   80% { opacity: 1; } 100% { opacity: 0; } }
+.compact .arrow { width: 44px; height: 44px; }
+.compact .bubble { width: min(240px, calc(100vw - 24px)); padding: 10px 12px 8px;
+  font-size: 13px; border-radius: 12px; }
+.compact .count { font-size: 10px; }
+.compact h3 { margin: 2px 0 3px; font-size: 14px; }
+.compact p { margin: 0 0 8px; }
+.compact .hint, .compact .bar { display: none; }
+.compact button { padding: 5px 10px; border-radius: 8px; font-size: 12px; }
 @media (prefers-color-scheme: dark) {
   .bubble { background: #1d2030; color: #eceef6; }
   .back { background: #2c3044; color: #eceef6; }
@@ -157,7 +168,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     root.appendChild(style);
   }
 
-  const wrap = el('div', 'wrap');
+  const wrap = el('div', cfg && cfg.compact ? 'wrap compact' : 'wrap');
   const spot = el('div', 'spot notarget');
   const ring = el('div', 'ring');
   const arrow = el('div', 'arrow');
@@ -230,6 +241,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 
   const api: any = {
     host,
+    touched: false,
     seq: 0,
     events: [] as { seq: number; type: string; at: number }[],
   };
@@ -297,7 +309,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     setBox(ring, s.x, s.y, s.w, s.h);
     ring.classList.add('on');
 
-    const A = 64;
+    const A = cfg && cfg.compact ? 44 : 64;
     const gap = 6;
     const space: Record<string, number> = {
       bottom: vh - (s.y + s.h),
@@ -371,7 +383,10 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     state.raf = requestAnimationFrame(frame);
   };
 
+  let pending = false;
   const inTarget = (t: EventTarget | null, ev?: MouseEvent): boolean => {
+    // The spotlight still shows the previous step's element until setTarget.
+    if (pending) return false;
     if (t instanceof Node && host.contains(t)) return false;
     if (state.el && state.el.isConnected && t instanceof Node) {
       return state.el.contains(t);
@@ -387,8 +402,11 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     }
     return false;
   };
+  // Whether the person has clicked or edited the target since the step was
+  // shown — so a Next press doesn't repeat what they already did.
   const onClick = (e: MouseEvent) => {
     if (!state.active) return;
+    if (inTarget(e.target, e)) api.touched = true;
     if (
       (state.advance === 'click' || state.advance === 'navigation') &&
       inTarget(e.target, e)
@@ -396,7 +414,11 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
       emit('target-click');
     }
   };
+  const onInput = (e: Event) => {
+    if (state.active && inTarget(e.target)) api.touched = true;
+  };
   const onChange = (e: Event) => {
+    if (state.active && inTarget(e.target)) api.touched = true;
     if (state.active && state.advance === 'input' && inTarget(e.target)) {
       emit('target-input');
     }
@@ -413,6 +435,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   };
   document.addEventListener('click', onClick, true);
   document.addEventListener('change', onChange, true);
+  document.addEventListener('input', onInput, true);
   document.addEventListener('keydown', onKey, true);
 
   next.addEventListener('click', () => emit('next'));
@@ -430,10 +453,57 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   };
   if (cfg && cfg.accent) api.setAccent(cfg.accent);
 
-  api.show = (o: any) => {
+  const reveal = () => {
+    if (state.el && state.el.isConnected) {
+      const r = state.el.getBoundingClientRect();
+      const visible =
+        r.top >= 0 &&
+        r.left >= 0 &&
+        r.bottom <= window.innerHeight &&
+        r.right <= window.innerWidth;
+      if (!visible) {
+        state.el.scrollIntoView({
+          behavior: 'smooth',
+          block: 'center',
+          inline: 'nearest',
+        });
+      }
+    }
+  };
+
+  const activate = () => {
+    state.last = '';
+    state.active = true;
+    bubble.classList.add('on');
+    spot.classList.add('on');
+    cancelAnimationFrame(state.raf);
+    state.raf = requestAnimationFrame(frame);
+  };
+
+  /**
+   * Point at a (new) target. Used after a `pending` show(): the caption goes
+   * up at once and the spotlight follows when the element is found.
+   */
+  api.setTarget = (o: any) => {
+    pending = false;
     state.el = o.el || null;
     state.selector = o.selector || null;
     state.rect = o.rect || null;
+    api.touched = false;
+    activate();
+    reveal();
+    return true;
+  };
+
+  api.show = (o: any) => {
+    // `pending`: the caption changes now, the spotlight stays put until setTarget.
+    pending = !!o.pending;
+    if (!o.pending) {
+      state.el = o.el || null;
+      state.selector = o.selector || null;
+      state.rect = o.rect || null;
+    }
+    api.touched = false;
     state.advance = o.advance || 'next';
     state.last = '';
     state.active = true;
@@ -455,21 +525,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     bubble.classList.add('pop', 'on');
     spot.classList.add('on');
 
-    if (state.el && state.el.isConnected) {
-      const r = state.el.getBoundingClientRect();
-      const visible =
-        r.top >= 0 &&
-        r.left >= 0 &&
-        r.bottom <= window.innerHeight &&
-        r.right <= window.innerWidth;
-      if (!visible) {
-        state.el.scrollIntoView({
-          behavior: 'smooth',
-          block: 'center',
-          inline: 'nearest',
-        });
-      }
-    }
+    if (!o.pending) reveal();
     cancelAnimationFrame(state.raf);
     state.raf = requestAnimationFrame(frame);
     if (o.mode !== 'demo') {
@@ -526,6 +582,7 @@ button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
     cancelAnimationFrame(state.raf);
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('change', onChange, true);
+    document.removeEventListener('input', onInput, true);
     document.removeEventListener('keydown', onKey, true);
     host.remove();
     if (w.__squirePresenter === api) delete w.__squirePresenter;

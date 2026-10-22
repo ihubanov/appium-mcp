@@ -7,6 +7,9 @@
  *    removes the overlay;
  *  - demo: Squire fills and clicks itself, but hands a password field back
  *    to the person instead of typing into it.
+ *  - guided Next does the step's action, never twice, never into a
+ *    password; Back goes back in the browser after a step that navigated;
+ *  - the compact callout sits beside the target without covering it.
  */
 import {
   describe,
@@ -30,7 +33,7 @@ const PAGE_A = `<!doctype html><html><body style="height:2000px">
   <h1 id="title">Expenses</h1>
   <input id="amount" placeholder="Amount">
   <input id="pw" type="password">
-  <button id="save" onclick="window.__saved=true">Save</button>
+  <button id="save" onclick="window.__saved=true; window.__clicks=(window.__clicks||0)+1">Save</button>
   <a id="next-page" href="/b">Continue</a>
 </body></html>`;
 
@@ -207,6 +210,142 @@ describe('presenter', () => {
       expect(st.steps[0]!.by).toBe('squire');
       await tour.stop();
       await overlayGone(page);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test('guided: Next performs the step', async () => {
+    const page = await freshPage();
+    try {
+      const tour = new Tour(page, [
+        { selector: '#save', text: 'Click Save.', action: 'click' },
+        { selector: '#title', text: 'Saved.' },
+      ]);
+      const run = tour.run(20_000);
+      await page.locator(NEXT).click();
+      await stepShown(page, 'Step 2 of 2');
+      expect(await page.evaluate(() => (window as any).__clicks)).toBe(1);
+      await page.locator(NEXT).click();
+      const st = await run;
+      expect(st.finished).toBe(true);
+      expect(st.steps[0]!.by).toBe('next');
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test('guided: Next does not repeat what the person already did', async () => {
+    const page = await freshPage();
+    try {
+      const tour = new Tour(page, [
+        {
+          selector: '#save',
+          text: 'Click Save.',
+          action: 'click',
+          advance: 'next',
+        },
+        {
+          selector: '#amount',
+          text: 'Type 42.',
+          action: 'fill',
+          value: '42',
+          advance: 'next',
+        },
+        { selector: '#title', text: 'Done.' },
+      ]);
+      const run = tour.run(20_000);
+      await page.locator(NEXT).waitFor();
+      await page.waitForTimeout(300);
+      await page.click('#save');
+      await page.locator(NEXT).click();
+      await stepShown(page, 'Step 2 of 3');
+      await page.waitForTimeout(300);
+      await page.fill('#amount', '7');
+      await page.locator(NEXT).click();
+      await stepShown(page, 'Step 3 of 3');
+      expect(await page.evaluate(() => (window as any).__clicks)).toBe(1);
+      expect(await page.inputValue('#amount')).toBe('7');
+      await page.locator(SKIP).click();
+      await run;
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test('guided: Next fills a normal field but never a password', async () => {
+    const page = await freshPage();
+    try {
+      const tour = new Tour(page, [
+        { selector: '#amount', text: 'Type 42.', action: 'fill', value: '42' },
+        {
+          selector: '#pw',
+          text: 'Your password.',
+          action: 'fill',
+          value: 'hunter2',
+        },
+        { selector: '#title', text: 'Done.' },
+      ]);
+      const run = tour.run(20_000);
+      await page.locator(NEXT).click();
+      await stepShown(page, 'Step 2 of 3');
+      expect(await page.inputValue('#amount')).toBe('42');
+      await page.locator(NEXT).click();
+      await stepShown(page, 'Step 3 of 3');
+      expect(await page.inputValue('#pw')).toBe('');
+      await page.locator(SKIP).click();
+      const st = await run;
+      expect(st.steps[1]!.detail).toMatch(/sensitive/);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test('guided: Back goes back in the browser after a step that navigated', async () => {
+    const page = await freshPage();
+    try {
+      const tour = new Tour(page, [
+        { selector: '#next-page', text: 'Continue.', action: 'click' },
+        { selector: '#done', text: 'Submitted.' },
+      ]);
+      const run = tour.run(20_000);
+      await page.locator(NEXT).click();
+      await page.waitForURL(`${base}/b`);
+      await stepShown(page, 'Step 2 of 2');
+      await page.locator(BACK).click();
+      await page.waitForURL(`${base}/a`);
+      await stepShown(page, 'Step 1 of 2');
+      await page.locator(SKIP).click();
+      const st = await run;
+      expect(st.stoppedByUser).toBe(true);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  test('the compact callout sits beside the target without covering it', async () => {
+    const page = await freshPage();
+    try {
+      const tour = new Tour(page, [
+        { selector: '#amount', text: 'Type the amount here.', action: 'fill' },
+      ]);
+      const run = tour.run(20_000);
+      await page.locator(NEXT).waitFor();
+      // Let the glide transitions finish.
+      await page.waitForTimeout(900);
+      const bubble = (await page
+        .locator('squire-presenter .bubble')
+        .boundingBox())!;
+      const target = (await page.locator('#amount').boundingBox())!;
+      expect(bubble.width).toBeLessThanOrEqual(260);
+      const overlaps =
+        bubble.x < target.x + target.width &&
+        bubble.x + bubble.width > target.x &&
+        bubble.y < target.y + target.height &&
+        bubble.y + bubble.height > target.y;
+      expect(overlaps).toBe(false);
+      await page.locator(SKIP).click();
+      await run;
     } finally {
       await page.close();
     }

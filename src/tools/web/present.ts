@@ -114,8 +114,10 @@ export default function present(server: FastMCP): void {
     description:
       'Show a person how to do something on a website: an animated spotlight, a pointing arrow and a caption ' +
       'walk them through it step by step on the real page. Use when the user says "show me how…", "where do I…", ' +
-      '"walk me through…", "guide me". Default mode "guided" only points and explains — the person clicks/types ' +
-      'themselves, and the tour advances on Next, on their click, on their input, or on navigation. Mode "demo" ' +
+      '"walk me through…", "guide me". Default mode "guided" points and explains — the person clicks/types ' +
+      'themselves, and the tour advances on their click, their input, or navigation; pressing Next does the ' +
+      "step's action for them (never into password/payment/one-time-code fields), and Back undoes a step that " +
+      'navigated. Mode "demo" ' +
       'performs the steps itself, slowly, with a visible cursor. Guided calls return waiting:true with a tourId ' +
       'when the person is still busy; call again with `resume` to keep waiting, or `stop` to end it.',
     parameters: schema,

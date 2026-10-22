@@ -9,7 +9,7 @@ description: Walk a person through a website on their own screen with an animate
 
 ## Guided vs demo
 
-- **guided (default)** — "show me how", "where do I", "walk me through", "guide me". Squire only points and explains; the **person** clicks and types. Each step advances when they press **Next**, click the highlighted element, fill it in, or the page navigates.
+- **guided (default)** — "show me how", "where do I", "walk me through", "guide me". Squire points and explains; the **person** clicks and types. Each step advances when they click the highlighted element, fill it in, or the page navigates. If they press **Next** instead, Squire does that step's `action` for them (click, fill with `value`, select…) so the page keeps up with the tour. It never does this for password, payment or one-time-code fields, and never repeats a step they already did. **Back** goes back in the browser if the step being undone navigated.
 - **demo** — "show me by doing it", "do it while I watch", "demonstrate". Squire performs each step itself at human pace, with a visible cursor and click ripple. It never types into password, payment or one-time-code fields: those steps turn into guided ones and wait for the person.
 
 When in doubt, use **guided**. People learn by doing it themselves.
@@ -21,7 +21,7 @@ When in doubt, use **guided**. People learn by doing it themselves.
    - A headless browser shows nothing to anyone. If the session is headless, say so and ask them to attach Squire to their Chrome (or create a headed session) first.
 2. **Scout before you present.** Find the real path through the site with read-only tools (`appium_get_page_source`, `generate_locators`, `playwright_evaluate`) so every step's `selector` is right. Don't guess selectors and don't navigate the person's tab away while scouting — scout in a separate tab if you need to click around, then close it.
 3. **Write the tour.** One idea per step, plain words, imperative ("Click **New expense**", "Type the amount here"). Usually 3–8 steps. The first step can be caption-only (no selector) to set the scene: "I'll show you how to file an expense — it takes four clicks."
-4. **Set each step's `action`** (`click`, `fill`, `select`…) to say what the step is. In guided mode that picks how it advances (`click` → waits for their click, `fill`/`select` → waits for their input). Override with `advance` when needed: `next` for steps that are just "look here", `navigation` for "submit this and we continue on the next page".
+4. **Set each step's `action`** (`click`, `fill`, `select`…) to say what the step is, and a `value` for fill/select steps so Next can do it for the person. In guided mode that picks how it advances (`click` → waits for their click, `fill`/`select` → waits for their input). Override with `advance` when needed: `next` for steps that are just "look here", `navigation` for "submit this and we continue on the next page".
 5. **Run it and wait for the person.** A guided call returns `waiting: true` with a `tourId` when they haven't finished within `waitSeconds` (default 120). The overlay stays on screen. Call again with `resume: "<tourId>"` to keep waiting. Don't pile on chat messages while they work.
 6. **Finish cleanly.** When the result says `finished`, the overlay plays a short "All done" and removes itself. If they hit **Skip**, `stoppedByUser` is true — ask whether they want to pick it up later rather than restarting. To end a tour yourself, call with `stop: "<tourId>"`.
 
@@ -48,6 +48,6 @@ When the DOM has nothing to point at (canvas apps, PDF viewers), use `visual` in
 
 - **Never fill in secrets for the person.** No passwords, card numbers or one-time codes, even if they're in your context. Point at the field and let them type. Demo mode enforces this; follow it in your own step design too.
 - **Don't act behind their back in guided mode.** In guided mode the person drives. Don't run `run_script` or click on that tab while a tour is waiting.
-- **Keep captions short.** About 1–2 lines per step. The bubble is small, and long text pushes it off the element.
+- **Keep captions short.** About 1–2 lines per step. The caption is a compact callout right next to the element; long text makes it cover the page.
 - **Check the result.** `steps[i].target` is `"none"` when a selector didn't match; the caption showed without a spotlight. If that happens on an important step, fix the selector and present the tour again.
 - **Stay off protected tabs.** The protected TUI tab is off-limits, as with the other tools.
