@@ -18,6 +18,7 @@ import { getDriver, isPlaywrightDriverSession } from '../../session-store.js';
 import { assertNotProtected } from '../../protected-urls.js';
 import { logActivity } from '../../activity-log.js';
 import { Tour, type PresentStep } from '../../presenter.js';
+import { ensureVisibleBrowser } from '../../visible-browser.js';
 
 /** Tours still on screen, keyed by tour id. */
 const tours = new Map<string, Tour>();
@@ -119,7 +120,9 @@ export default function present(server: FastMCP): void {
       "step's action for them (never into password/payment/one-time-code fields), and Back undoes a step that " +
       'navigated. Mode "demo" ' +
       'performs the steps itself, slowly, with a visible cursor. Guided calls return waiting:true with a tourId ' +
-      'when the person is still busy; call again with `resume` to keep waiting, or `stop` to end it.',
+      'when the person is still busy; call again with `resume` to keep waiting, or `stop` to end it. ' +
+      'Tours always run where the person can see them: a headless session is reopened in a visible browser ' +
+      'first (same page, cookies and localStorage), and the call fails if no visible browser can open.',
     parameters: schema,
     annotations: {
       readOnlyHint: false,
@@ -148,6 +151,7 @@ export default function present(server: FastMCP): void {
 
       let tourId: string;
       let tour: Tour;
+      let reopened = false;
       if (args.resume) {
         const t = tours.get(args.resume);
         if (!t) {
@@ -164,7 +168,7 @@ export default function present(server: FastMCP): void {
         const driver = getDriver();
         if (!driver || !isPlaywrightDriverSession(driver)) {
           throw new Error(
-            'No Playwright web session found. Create a session with platform="web" first.'
+            'No Playwright web session found. Create a session with platform="web" and headless=false first.'
           );
         }
         let page = driver.page;
@@ -178,6 +182,7 @@ export default function present(server: FastMCP): void {
           page = p;
         }
         assertNotProtected(page.url(), 'present on');
+        ({ page, reopened } = await ensureVisibleBrowser(driver, page));
 
         // One tour per page: a new one replaces whatever is on screen there.
         for (const [id, t] of tours) {
@@ -245,10 +250,16 @@ export default function present(server: FastMCP): void {
         note = '';
       }
 
+      if (reopened) {
+        note =
+          `${note} The session was headless, so the page was reopened in a visible browser first. ` +
+          'Earlier tab ids no longer work.';
+      }
+
       const summary = {
         ...(tour.done ? {} : { tourId }),
         ...status,
-        note,
+        note: note.trim(),
       };
       return {
         content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }],

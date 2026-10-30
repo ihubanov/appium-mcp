@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { access, readFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { URL } from 'node:url';
+import type { BrowserContext } from 'playwright';
 import type { AndroidUiautomator2Driver } from 'appium-uiautomator2-driver';
 import type { XCUITestDriver } from 'appium-xcuitest-driver';
 import { setSession, listSessions, dropDisconnectedSession } from '../../session-store.js';
@@ -277,6 +278,306 @@ async function createDriverSession(
  * // Register the tool
  * createSession(server);
  */
+export interface WebSessionOptions {
+  browser?: string;
+  /** Default true. */
+  headless?: boolean;
+  url?: string;
+  viewport?: { width: number; height: number };
+  /** Cookies and localStorage for a launched browser (not used when attached to the user's). */
+  storageState?: Awaited<ReturnType<BrowserContext['storageState']>>;
+}
+
+/** Open a Playwright browser and make it the active session. */
+export async function openWebSession(opts: WebSessionOptions) {
+  const browserType = opts.browser || 'chromium';
+  const headless = opts.headless !== false; // default true
+  const initialUrl = opts.url;
+  const viewport = opts.viewport || { width: 1920, height: 1080 };
+
+  log.info(
+    `Creating new WEB session with Playwright (${browserType}, headless=${headless})`
+  );
+
+  const { chromium, firefox, webkit } = await import('playwright');
+  const engines = { chromium, firefox, webkit };
+  const engine = engines[browserType as keyof typeof engines];
+  if (!engine) {
+    throw new Error(
+      `Unsupported browser: ${browserType}. Use chromium, firefox, or webkit.`
+    );
+  }
+
+  // CDP attach mode: when APPIUM_MCP_CDP_ENDPOINT is set, attach to
+  // an externally-managed Chromium instance (e.g. one launched by
+  // ai-colleague with --remote-debugging-port) instead of spawning
+  // a fresh browser. New tabs/pages opened by the AI then appear
+  // in the user's already-open Chromium window.
+  const cdpEndpoint = process.env.APPIUM_MCP_CDP_ENDPOINT;
+  // Hard-fail mode (shared-display deployments, e.g. herdr-share):
+  // when APPIUM_MCP_CDP_REQUIRED is set, a failed attach MUST throw
+  // instead of silently falling back to a detached launch — a
+  // fallback browser is invisible to whoever is watching the
+  // shared display, which is exactly the failure this prevents.
+  const cdpRequired = /^(1|true|yes)$/i.test(
+    (process.env.APPIUM_MCP_CDP_REQUIRED ?? '').trim()
+  );
+  if (cdpRequired && !cdpEndpoint) {
+    throw new Error(
+      'APPIUM_MCP_CDP_REQUIRED is set but APPIUM_MCP_CDP_ENDPOINT is not — refusing to launch a detached browser.'
+    );
+  }
+  let browser!: import('playwright').Browser;
+  let context!: import('playwright').BrowserContext;
+  let page!: import('playwright').Page;
+  // CDP debug port of a browser we launch ourselves (undefined in
+  // CDP-attach mode or when disabled via APPIUM_MCP_CDP_PORT=0).
+  let cdpPort: number | undefined;
+  // True only if we actually attached to the user's own browser.
+  // Attach is attempted when APPIUM_MCP_CDP_ENDPOINT is set, but a
+  // dead endpoint (the user's Chromium isn't running right now)
+  // falls back to a detached launch instead of failing the session.
+  let attachedToUserBrowser = false;
+
+  if (cdpEndpoint && browserType === 'chromium') {
+    log.info(`Attaching to existing Chromium via CDP at ${cdpEndpoint}`);
+    try {
+      const b = await chromium.connectOverCDP(cdpEndpoint);
+      const contexts = b.contexts();
+      // viewport:null and no userAgent override — the user's real
+      // Chrome already sends a correct, self-consistent UA + client
+      // hints; a hardcoded string drifts from the real version and
+      // flags as automation. viewport:null lets pages fill the window.
+      const ctx = contexts[0] ?? (await b.newContext({ viewport: null }));
+      // CDP-attach: do NOT create a new page on session creation.
+      // The user already sees their open tabs in the host Chromium;
+      // opening a blank tab here would pollute the tab list before
+      // the AI has done anything. We adopt the first existing page
+      // as the driver's "active" handle so tools have something to
+      // operate on, but the AI is expected to call playwright_new_tab
+      // before any navigation/interaction so it never accidentally
+      // mutates a page the user owns (e.g. the qwen-web TUI tab).
+      // This browser is the user's own window — enable the
+      // focus/protected-tab guards for it.
+      markSharedWithUser(ctx);
+      const existing = ctx.pages();
+      // Edge case when no pages exist: a Chromium with zero pages.
+      // Open one so the driver isn't broken; this is the only time
+      // CDP-attach create_session adds a tab.
+      const pg = existing[0] ?? (await ctx.newPage());
+      browser = b;
+      context = ctx;
+      page = pg;
+      attachedToUserBrowser = true;
+      // Make the page fill the real browser window. Playwright over
+      // CDP otherwise leaves a fixed viewport emulation (~1280x720),
+      // so the page renders into a small box with dead space around it
+      // (the "page doesn't cover the window" symptom). Clearing the
+      // device-metrics override lets the page track the actual window.
+      try {
+        const vp = await ctx.newCDPSession(pg);
+        await vp.send('Emulation.clearDeviceMetricsOverride');
+        await vp.detach().catch(() => {});
+      } catch { /* best-effort */ }
+    } catch (e) {
+      if (cdpRequired) {
+        throw new Error(
+          `CDP attach to ${cdpEndpoint} failed (${(e as Error).message}) and APPIUM_MCP_CDP_REQUIRED is set — NOT falling back to a detached launch. Is the shared browser up?`
+        );
+      }
+      log.warn(
+        `Could not attach to CDP endpoint ${cdpEndpoint} (${(e as Error).message}); the user's browser is probably not running. Falling back to a detached launch.`
+      );
+    }
+  }
+
+  if (!attachedToUserBrowser) {
+    if (cdpEndpoint && browserType !== 'chromium') {
+      if (cdpRequired) {
+        throw new Error(
+          `APPIUM_MCP_CDP_REQUIRED is set but browserType=${browserType}; CDP attach only supports chromium.`
+        );
+      }
+      log.warn(
+        `APPIUM_MCP_CDP_ENDPOINT is set but browserType=${browserType}; CDP attach only supports chromium. Falling back to launch().`
+      );
+    }
+
+    // Fully detach the launched browser from any Chrome/Chromium
+    // the user already has open. Playwright's launch() always
+    // creates a fresh temp user-data-dir, so we get our own
+    // process (Chrome's singleton lock is per-profile) — the
+    // args below make the separation visible and safe:
+    //  - --class gives the window its own WM_CLASS so the window
+    //    manager doesn't group it with the user's Chrome (Linux).
+    //  - --remote-debugging-port exposes CDP for this browser on
+    //    a port that is verified free first. If a pre-existing
+    //    Chrome already holds the preferred port we walk to the
+    //    next free one, so a later connectOverCDP can never land
+    //    in the user's browser by accident.
+    // APPIUM_MCP_CDP_PORT sets the preferred port (default 9222);
+    // set it to 0 or "none" to not expose CDP at all.
+    const isChromium = browserType === 'chromium';
+    const cdpPortEnv = (process.env.APPIUM_MCP_CDP_PORT ?? '').trim();
+    if (
+      isChromium &&
+      cdpPortEnv !== '0' &&
+      cdpPortEnv.toLowerCase() !== 'none'
+    ) {
+      const preferredPort = parseInt(cdpPortEnv, 10) || 9222;
+      cdpPort = await findFreePort(preferredPort);
+      if (cdpPort !== preferredPort) {
+        log.info(
+          `CDP port ${preferredPort} is already in use (another Chrome/Chromium?); using free port ${cdpPort} instead.`
+        );
+      }
+    }
+    const detachArgs = [
+      '--class=appium-mcp',
+      ...(cdpPort ? [`--remote-debugging-port=${cdpPort}`] : []),
+    ];
+
+    // Human-like ("stealth") defaults for chromium so sites with
+    // bot detection (Google sign-in, Booking, etc.) treat the
+    // browser like a real user instead of automation. We prefer the
+    // installed Google Chrome binary over bundled Chromium, strip
+    // the automation switches that set navigator.webdriver and the
+    // "controlled by automated software" banner, and mask the
+    // remaining automation fingerprints via an init script.
+    // Set APPIUM_MCP_STEALTH=0 to opt back into plain launch.
+    const stealth =
+      isChromium && process.env.APPIUM_MCP_STEALTH !== '0';
+
+    if (stealth) {
+      const launchOpts = {
+        headless,
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-infobars',
+          ...detachArgs,
+        ],
+        ignoreDefaultArgs: ['--enable-automation'],
+      };
+      try {
+        // Real Google Chrome binary — least detectable.
+        browser = await chromium.launch({
+          ...launchOpts,
+          channel: 'chrome',
+        });
+      } catch (e) {
+        log.warn(
+          `Could not launch system Chrome channel (${(e as Error).message}); falling back to bundled Chromium.`
+        );
+        browser = await chromium.launch(launchOpts);
+      }
+    } else {
+      browser = await engine.launch({
+        headless,
+        ...(isChromium ? { args: detachArgs } : {}),
+      });
+    }
+
+    context = await browser.newContext({
+      viewport,
+      // No userAgent override: a hardcoded string drifts from the real
+      // Chrome version and desyncs from navigator.userAgentData /
+      // client hints, which is itself a bot signal. The real Chrome
+      // channel already sends a correct, consistent UA.
+      locale: 'en-US',
+      timezoneId: 'Europe/Sofia',
+      ...(opts.storageState ? { storageState: opts.storageState } : {}),
+    });
+
+    if (stealth) {
+      await context.addInitScript(() => {
+        // navigator.webdriver === true is the #1 automation tell.
+        Object.defineProperty(navigator, 'webdriver', {
+          get: () => undefined,
+        });
+        Object.defineProperty(navigator, 'languages', {
+          get: () => ['en-US', 'en'],
+        });
+        Object.defineProperty(navigator, 'plugins', {
+          get: () => [1, 2, 3, 4, 5],
+        });
+        // Some detectors check for the presence of window.chrome.
+        (window as unknown as { chrome: unknown }).chrome = (
+          window as unknown as { chrome?: unknown }
+        ).chrome || { runtime: {} };
+      });
+    }
+
+    page = await context.newPage();
+  }
+
+  if (initialUrl) {
+    if (attachedToUserBrowser) {
+      // Attached to the user's own browser: `page` is one of the
+      // user's real tabs (adopted above). Navigating it would yank
+      // the user away from whatever they were looking at — and does
+      // so bypassing the protected-url / focus guards that every
+      // other mutating web tool honours. Open a fresh tab for the
+      // AI instead and navigate THAT, leaving the user's tabs alone.
+      page = await context.newPage();
+    }
+    try {
+      await page.goto(initialUrl);
+    } catch (e) {
+      // Not a session yet, so nothing else would ever close this.
+      await (attachedToUserBrowser ? page.close() : browser.close()).catch(
+        () => {}
+      );
+      throw e;
+    }
+  }
+
+  const pwDriver = new PlaywrightDriver(
+    browser,
+    context,
+    page,
+    attachedToUserBrowser,
+  );
+  const sessionId = `pw-${Date.now()}`;
+  const webCapabilities = {
+    platformName: 'Web',
+    browserName: browserType,
+    headless,
+    viewport,
+    ...(cdpPort ? { cdpPort } : {}),
+    attachedToUserBrowser,
+  };
+  setSession(pwDriver, sessionId, webCapabilities);
+
+  // Auto-cleanup on browser close. If this browser goes away
+  // unexpectedly — the user closes the CDP-attached Chrome, it
+  // crashes, or is killed — Playwright emits 'disconnected'. Drop the
+  // session so the next tool call reports a clean "no web session"
+  // instead of a pile of "Target closed" errors, and leave a trace in
+  // the activity log so agents can see the browser vanished.
+  // Intentional teardown (delete_session) sets isDeletingSession
+  // first, so dropDisconnectedSession no-ops there.
+  browser.on('disconnected', () => {
+    dropDisconnectedSession(sessionId, 'attached browser closed');
+  });
+
+  log.info(
+    `WEB session created successfully with ID: ${sessionId}`
+  );
+
+  return {
+    sessionId,
+    driver: pwDriver,
+    browserType,
+    headless,
+    viewport,
+    initialUrl,
+    cdpPort,
+    attachedToUserBrowser,
+  };
+}
+
 export default function createSession(server: any): void {
   server.addTool({
     name: 'create_session',
@@ -332,7 +633,7 @@ export default function createSession(server: any): void {
         }, z.boolean())
         .optional()
         .describe(
-          'For web platform only: Whether to run the browser in headless mode. Default is true.'
+          'For web platform only: Whether to run the browser in headless mode. Default is true. Pass false when a person should watch, as for playwright_present.'
         ),
       url: z
         .string()
@@ -364,272 +665,20 @@ export default function createSession(server: any): void {
 
         // Handle Playwright web sessions
         if (platform === 'web') {
-          const browserType = args.browser || 'chromium';
-          const headless = args.headless !== false; // default true
-          const initialUrl = args.url;
-          const viewport = args.viewport || { width: 1920, height: 1080 };
-
-          log.info(
-            `Creating new WEB session with Playwright (${browserType}, headless=${headless})`
-          );
-
-          const { chromium, firefox, webkit } = await import('playwright');
-          const engines = { chromium, firefox, webkit };
-          const engine = engines[browserType as keyof typeof engines];
-          if (!engine) {
-            throw new Error(
-              `Unsupported browser: ${browserType}. Use chromium, firefox, or webkit.`
-            );
-          }
-
-          // CDP attach mode: when APPIUM_MCP_CDP_ENDPOINT is set, attach to
-          // an externally-managed Chromium instance (e.g. one launched by
-          // ai-colleague with --remote-debugging-port) instead of spawning
-          // a fresh browser. New tabs/pages opened by the AI then appear
-          // in the user's already-open Chromium window.
-          const cdpEndpoint = process.env.APPIUM_MCP_CDP_ENDPOINT;
-          // Hard-fail mode (shared-display deployments, e.g. herdr-share):
-          // when APPIUM_MCP_CDP_REQUIRED is set, a failed attach MUST throw
-          // instead of silently falling back to a detached launch — a
-          // fallback browser is invisible to whoever is watching the
-          // shared display, which is exactly the failure this prevents.
-          const cdpRequired = /^(1|true|yes)$/i.test(
-            (process.env.APPIUM_MCP_CDP_REQUIRED ?? '').trim()
-          );
-          if (cdpRequired && !cdpEndpoint) {
-            throw new Error(
-              'APPIUM_MCP_CDP_REQUIRED is set but APPIUM_MCP_CDP_ENDPOINT is not — refusing to launch a detached browser.'
-            );
-          }
-          let browser!: import('playwright').Browser;
-          let context!: import('playwright').BrowserContext;
-          let page!: import('playwright').Page;
-          // CDP debug port of a browser we launch ourselves (undefined in
-          // CDP-attach mode or when disabled via APPIUM_MCP_CDP_PORT=0).
-          let cdpPort: number | undefined;
-          // True only if we actually attached to the user's own browser.
-          // Attach is attempted when APPIUM_MCP_CDP_ENDPOINT is set, but a
-          // dead endpoint (the user's Chromium isn't running right now)
-          // falls back to a detached launch instead of failing the session.
-          let attachedToUserBrowser = false;
-
-          if (cdpEndpoint && browserType === 'chromium') {
-            log.info(`Attaching to existing Chromium via CDP at ${cdpEndpoint}`);
-            try {
-              const b = await chromium.connectOverCDP(cdpEndpoint);
-              const contexts = b.contexts();
-              // viewport:null and no userAgent override — the user's real
-              // Chrome already sends a correct, self-consistent UA + client
-              // hints; a hardcoded string drifts from the real version and
-              // flags as automation. viewport:null lets pages fill the window.
-              const ctx = contexts[0] ?? (await b.newContext({ viewport: null }));
-              // CDP-attach: do NOT create a new page on session creation.
-              // The user already sees their open tabs in the host Chromium;
-              // opening a blank tab here would pollute the tab list before
-              // the AI has done anything. We adopt the first existing page
-              // as the driver's "active" handle so tools have something to
-              // operate on, but the AI is expected to call playwright_new_tab
-              // before any navigation/interaction so it never accidentally
-              // mutates a page the user owns (e.g. the qwen-web TUI tab).
-              // This browser is the user's own window — enable the
-              // focus/protected-tab guards for it.
-              markSharedWithUser(ctx);
-              const existing = ctx.pages();
-              // Edge case when no pages exist: a Chromium with zero pages.
-              // Open one so the driver isn't broken; this is the only time
-              // CDP-attach create_session adds a tab.
-              const pg = existing[0] ?? (await ctx.newPage());
-              browser = b;
-              context = ctx;
-              page = pg;
-              attachedToUserBrowser = true;
-              // Make the page fill the real browser window. Playwright over
-              // CDP otherwise leaves a fixed viewport emulation (~1280x720),
-              // so the page renders into a small box with dead space around it
-              // (the "page doesn't cover the window" symptom). Clearing the
-              // device-metrics override lets the page track the actual window.
-              try {
-                const vp = await ctx.newCDPSession(pg);
-                await vp.send('Emulation.clearDeviceMetricsOverride');
-                await vp.detach().catch(() => {});
-              } catch { /* best-effort */ }
-            } catch (e) {
-              if (cdpRequired) {
-                throw new Error(
-                  `CDP attach to ${cdpEndpoint} failed (${(e as Error).message}) and APPIUM_MCP_CDP_REQUIRED is set — NOT falling back to a detached launch. Is the shared browser up?`
-                );
-              }
-              log.warn(
-                `Could not attach to CDP endpoint ${cdpEndpoint} (${(e as Error).message}); the user's browser is probably not running. Falling back to a detached launch.`
-              );
-            }
-          }
-
-          if (!attachedToUserBrowser) {
-            if (cdpEndpoint && browserType !== 'chromium') {
-              if (cdpRequired) {
-                throw new Error(
-                  `APPIUM_MCP_CDP_REQUIRED is set but browserType=${browserType}; CDP attach only supports chromium.`
-                );
-              }
-              log.warn(
-                `APPIUM_MCP_CDP_ENDPOINT is set but browserType=${browserType}; CDP attach only supports chromium. Falling back to launch().`
-              );
-            }
-
-            // Fully detach the launched browser from any Chrome/Chromium
-            // the user already has open. Playwright's launch() always
-            // creates a fresh temp user-data-dir, so we get our own
-            // process (Chrome's singleton lock is per-profile) — the
-            // args below make the separation visible and safe:
-            //  - --class gives the window its own WM_CLASS so the window
-            //    manager doesn't group it with the user's Chrome (Linux).
-            //  - --remote-debugging-port exposes CDP for this browser on
-            //    a port that is verified free first. If a pre-existing
-            //    Chrome already holds the preferred port we walk to the
-            //    next free one, so a later connectOverCDP can never land
-            //    in the user's browser by accident.
-            // APPIUM_MCP_CDP_PORT sets the preferred port (default 9222);
-            // set it to 0 or "none" to not expose CDP at all.
-            const isChromium = browserType === 'chromium';
-            const cdpPortEnv = (process.env.APPIUM_MCP_CDP_PORT ?? '').trim();
-            if (
-              isChromium &&
-              cdpPortEnv !== '0' &&
-              cdpPortEnv.toLowerCase() !== 'none'
-            ) {
-              const preferredPort = parseInt(cdpPortEnv, 10) || 9222;
-              cdpPort = await findFreePort(preferredPort);
-              if (cdpPort !== preferredPort) {
-                log.info(
-                  `CDP port ${preferredPort} is already in use (another Chrome/Chromium?); using free port ${cdpPort} instead.`
-                );
-              }
-            }
-            const detachArgs = [
-              '--class=appium-mcp',
-              ...(cdpPort ? [`--remote-debugging-port=${cdpPort}`] : []),
-            ];
-
-            // Human-like ("stealth") defaults for chromium so sites with
-            // bot detection (Google sign-in, Booking, etc.) treat the
-            // browser like a real user instead of automation. We prefer the
-            // installed Google Chrome binary over bundled Chromium, strip
-            // the automation switches that set navigator.webdriver and the
-            // "controlled by automated software" banner, and mask the
-            // remaining automation fingerprints via an init script.
-            // Set APPIUM_MCP_STEALTH=0 to opt back into plain launch.
-            const stealth =
-              isChromium && process.env.APPIUM_MCP_STEALTH !== '0';
-
-            if (stealth) {
-              const launchOpts = {
-                headless,
-                args: [
-                  '--disable-blink-features=AutomationControlled',
-                  '--no-first-run',
-                  '--no-default-browser-check',
-                  '--disable-infobars',
-                  ...detachArgs,
-                ],
-                ignoreDefaultArgs: ['--enable-automation'],
-              };
-              try {
-                // Real Google Chrome binary — least detectable.
-                browser = await chromium.launch({
-                  ...launchOpts,
-                  channel: 'chrome',
-                });
-              } catch (e) {
-                log.warn(
-                  `Could not launch system Chrome channel (${(e as Error).message}); falling back to bundled Chromium.`
-                );
-                browser = await chromium.launch(launchOpts);
-              }
-            } else {
-              browser = await engine.launch({
-                headless,
-                ...(isChromium ? { args: detachArgs } : {}),
-              });
-            }
-
-            context = await browser.newContext({
-              viewport,
-              // No userAgent override: a hardcoded string drifts from the real
-              // Chrome version and desyncs from navigator.userAgentData /
-              // client hints, which is itself a bot signal. The real Chrome
-              // channel already sends a correct, consistent UA.
-              locale: 'en-US',
-              timezoneId: 'Europe/Sofia',
-            });
-
-            if (stealth) {
-              await context.addInitScript(() => {
-                // navigator.webdriver === true is the #1 automation tell.
-                Object.defineProperty(navigator, 'webdriver', {
-                  get: () => undefined,
-                });
-                Object.defineProperty(navigator, 'languages', {
-                  get: () => ['en-US', 'en'],
-                });
-                Object.defineProperty(navigator, 'plugins', {
-                  get: () => [1, 2, 3, 4, 5],
-                });
-                // Some detectors check for the presence of window.chrome.
-                (window as unknown as { chrome: unknown }).chrome = (
-                  window as unknown as { chrome?: unknown }
-                ).chrome || { runtime: {} };
-              });
-            }
-
-            page = await context.newPage();
-          }
-
-          if (initialUrl) {
-            if (attachedToUserBrowser) {
-              // Attached to the user's own browser: `page` is one of the
-              // user's real tabs (adopted above). Navigating it would yank
-              // the user away from whatever they were looking at — and does
-              // so bypassing the protected-url / focus guards that every
-              // other mutating web tool honours. Open a fresh tab for the
-              // AI instead and navigate THAT, leaving the user's tabs alone.
-              page = await context.newPage();
-            }
-            await page.goto(initialUrl);
-          }
-
-          const pwDriver = new PlaywrightDriver(
-            browser,
-            context,
-            page,
-            attachedToUserBrowser,
-          );
-          const sessionId = `pw-${Date.now()}`;
-          const webCapabilities = {
-            platformName: 'Web',
-            browserName: browserType,
+          const {
+            sessionId,
+            browserType,
             headless,
             viewport,
-            ...(cdpPort ? { cdpPort } : {}),
+            initialUrl,
+            cdpPort,
             attachedToUserBrowser,
-          };
-          setSession(pwDriver, sessionId, webCapabilities);
-
-          // Auto-cleanup on browser close. If this browser goes away
-          // unexpectedly — the user closes the CDP-attached Chrome, it
-          // crashes, or is killed — Playwright emits 'disconnected'. Drop the
-          // session so the next tool call reports a clean "no web session"
-          // instead of a pile of "Target closed" errors, and leave a trace in
-          // the activity log so agents can see the browser vanished.
-          // Intentional teardown (delete_session) sets isDeletingSession
-          // first, so dropDisconnectedSession no-ops there.
-          browser.on('disconnected', () => {
-            dropDisconnectedSession(sessionId, 'attached browser closed');
+          } = await openWebSession({
+            browser: args.browser,
+            headless: args.headless,
+            url: args.url,
+            viewport: args.viewport,
           });
-
-          log.info(
-            `WEB session created successfully with ID: ${sessionId}`
-          );
 
           const totalSessions = listSessions().length;
 
@@ -637,7 +686,7 @@ export default function createSession(server: any): void {
             content: [
               {
                 type: 'text',
-                text: `WEB session created successfully with ID: ${sessionId}\nPlatform: Web (Playwright)\nBrowser: ${browserType}\nHeadless: ${headless}\nViewport: ${viewport.width}x${viewport.height}${initialUrl ? `\nURL: ${initialUrl}` : ''}${webCapabilities.attachedToUserBrowser ? '\nMode: attached to user browser (CDP)' : `\nMode: detached browser (own process/profile)${cdpPort ? `, CDP on 127.0.0.1:${cdpPort}` : ''}`}\nActive sessions: ${totalSessions}`,
+                text: `WEB session created successfully with ID: ${sessionId}\nPlatform: Web (Playwright)\nBrowser: ${browserType}\nHeadless: ${headless}\nViewport: ${viewport.width}x${viewport.height}${initialUrl ? `\nURL: ${initialUrl}` : ''}${attachedToUserBrowser ? '\nMode: attached to user browser (CDP)' : `\nMode: detached browser (own process/profile)${cdpPort ? `, CDP on 127.0.0.1:${cdpPort}` : ''}`}\nActive sessions: ${totalSessions}`,
               },
             ],
           };
@@ -647,7 +696,7 @@ export default function createSession(server: any): void {
           // very noisy for the user. Suppress the UI resource when
           // APPIUM_MCP_NO_UI is set, or implicitly when CDP-attach mode is
           // active (ai-colleague case).
-          if (process.env.APPIUM_MCP_NO_UI || cdpEndpoint) {
+          if (process.env.APPIUM_MCP_NO_UI || process.env.APPIUM_MCP_CDP_ENDPOINT) {
             return textResponse;
           }
 
